@@ -109,6 +109,31 @@
 - **验证（2026-10-13）**：`speed` 由 1.5 → 3.0 → 4.0 连续修改，**热生效**（`cosmic-config` 监听文件变更）；
   `enabled: false` 可完全关闭动画；全程 `cosmic-comp` **同一 pid 未重启**，无崩溃。用户确认动画明显加快 ✔
 
+### K-007 · 内存占用偏高 / applet CPU 偶高
+
+- **现象**：COSMIC 全量进程常驻约 **1.7–1.9 GB**；`cosmic-files-applet` CPU 偶发 15–20%
+- **影响**：在 15 GB 内存机器上可接受，但与"Rust 省内存"的直觉不符（与社区评测结论一致）
+- **证据**：`ps -eo comm,rss | grep cosmic` 汇总；`cosmic-files-applet.scope` 记录 593 MB peak
+- **状态**：`仅记录`（`docs/PERFORMANCE.md` 建立基线后跟踪）
+
+### K-008 · fcitx5 需按合成器重新绑定
+
+- **现象**：fcitx5 是「每个合成器一份」的：在 KDE(Ctrl+Alt+F2) 与 COSMIC(Ctrl+Alt+F3) 之间切换后，中文输入失效
+- **影响**：切换会话后需重绑输入法
+- **规避**：`scripts/60-verify.sh --rebind-ime`（等价脚本），自动识别当前活动会话并重绑
+- **证据**：fcitx5 日志 `Using Wayland native input method protocol: 1`（说明 cosmic-comp 的 `zwp_input_method_v2` 已被使用，协议本身没问题）
+- **状态**：`已内置规避`
+
+---
+
+## 运维提示（非缺陷）
+
+| 项 | 说明 |
+|---|---|
+| 首次构建耗时长 | 约 1.5–4 小时（30 个组件各自编译）；用 `sccache` 后重复构建大幅缩短 |
+| 磁盘占用 | 各组件 `target/` 合计约 37 GB；`scripts/30-build.sh --slim` 可清理（保留 sccache）|
+| 首次拉取工具链 | 各组件 `rust-toolchain.toml` 会触发 rustup 下载对应版本（如 1.93.1）|
+| sysext 生效期间 | `/usr`、`/opt` 为只读叠加层，此时**不要用包管理器装/升级软件**（先卸载扩展）|
 ### K-009 · COSMIC System Monitor 进程列表的中文显示异常
 
 - **现象**：`cosmic-monitor` 进程列表中含中文的条目显示不正常
@@ -162,6 +187,30 @@
 
 - **状态**：`观察中`（已定性：字形缺失、非编码问题；上游无同类 issue，可新报；
   候选补丁 0003 = 让 libcosmic 的 table 文本走标准文本管线，需 vendoring libcosmic，工程量较大）
+
+### K-010 · 磨砂玻璃的效率成本（不是 bug，上游已知的预期限制）
+
+- **现象**：开启磨砂玻璃后，请求模糊的窗口**内部元素**一有动作（滚动、进度动画、列表刷新等），
+  GPU 利用率明显上升；窗口本身的移动反而不是主因
+- **定性**：**非正确性问题**。上游 issue #2650 中，维护者 Drakulix 明确回复：
+  *"This is expected currently, we are aware of the limitations"* ✔ 与本机观察一致
+- **机制（代码级，已验证）**：`src/backend/render/wayland/blur_effect.rs`
+  - 模糊纹理按 `{renderer_id, offset, passes, region, src}` 做脏判定缓存 →
+    **窗口内部内容变化不会触发重新模糊**（`dirty` 五项均未变 → `commit` 不递增）
+  - 剩余成本来自**每帧对模糊结果的合成采样**，与「模糊面积 × 通道数(`passes`)」成正比
+  - 档位映射：`MAX_STEPS = 15`；`strength = (theme.frosted as u8 + 1)`；
+    `BlurStrength` 共 14 档（ExtremelyLow…ExtremelyHigh2），本机当前 `High2`（索引 9）→ `strength = 10`
+- **上游相关反馈**：
+  - [#2650](https://github.com/pop-os/cosmic-comp/issues/2650) 面板模糊 + 窗口模糊的 GPU 成本 ≈ 两者单独之和的 2 倍（closed，标记为预期限制）
+  - [#2795](https://github.com/pop-os/cosmic-comp/issues/2795) 每工作区多个磨砂窗口后性能下降（open；报告者实测**降低 frost 强度后显著改善**，与上表一致）
+  - [#2905](https://github.com/pop-os/cosmic-comp/issues/2905) 面板/程序坞模糊 + 副屏视频 → 输入延迟（open）
+- **缓解手段（不改代码）**：
+  1. 降低档位：`frosted` 从 `High2` → `High`/`Medium2`（成本随 `passes` 近似线性下降）
+  2. 只关窗口模糊、保留面板/小部件：`frosted_windows = false`（窗口内元素动作是主要成本来源）
+  3. 减少同屏磨砂窗口数量/面积
+- **我们的策略**：**暂不做本地优化补丁** —— 上游视为预期限制，方案空间未明；
+  若日后要做，须先按 #2795 的方法给出真机可复现数据（见 `UPSTREAMING.md` 的红线）
+- **状态**：`已定性（已知效率限制，非缺陷）`
 
 ### K-011 · 打开设置时主题回退成暗色（主题配置缺必填字段）
 
@@ -249,52 +298,3 @@
   （切到 KDE 用 `desktop-portals kde`，否则 KDE 侧截图/文件选择器会被 COSMIC 后端接管）
 - **不宜用静态 `portals.conf` 钉死**：双桌面共享同一用户级 portal，钉死会牺牲另一侧
 - **状态**：`已本地缓解（按桌面切换 portal 归属）`
-### K-010 · 磨砂玻璃的效率成本（不是 bug，上游已知的预期限制）
-
-- **现象**：开启磨砂玻璃后，请求模糊的窗口**内部元素**一有动作（滚动、进度动画、列表刷新等），
-  GPU 利用率明显上升；窗口本身的移动反而不是主因
-- **定性**：**非正确性问题**。上游 issue #2650 中，维护者 Drakulix 明确回复：
-  *"This is expected currently, we are aware of the limitations"* ✔ 与本机观察一致
-- **机制（代码级，已验证）**：`src/backend/render/wayland/blur_effect.rs`
-  - 模糊纹理按 `{renderer_id, offset, passes, region, src}` 做脏判定缓存 →
-    **窗口内部内容变化不会触发重新模糊**（`dirty` 五项均未变 → `commit` 不递增）
-  - 剩余成本来自**每帧对模糊结果的合成采样**，与「模糊面积 × 通道数(`passes`)」成正比
-  - 档位映射：`MAX_STEPS = 15`；`strength = (theme.frosted as u8 + 1)`；
-    `BlurStrength` 共 14 档（ExtremelyLow…ExtremelyHigh2），本机当前 `High2`（索引 9）→ `strength = 10`
-- **上游相关反馈**：
-  - [#2650](https://github.com/pop-os/cosmic-comp/issues/2650) 面板模糊 + 窗口模糊的 GPU 成本 ≈ 两者单独之和的 2 倍（closed，标记为预期限制）
-  - [#2795](https://github.com/pop-os/cosmic-comp/issues/2795) 每工作区多个磨砂窗口后性能下降（open；报告者实测**降低 frost 强度后显著改善**，与上表一致）
-  - [#2905](https://github.com/pop-os/cosmic-comp/issues/2905) 面板/程序坞模糊 + 副屏视频 → 输入延迟（open）
-- **缓解手段（不改代码）**：
-  1. 降低档位：`frosted` 从 `High2` → `High`/`Medium2`（成本随 `passes` 近似线性下降）
-  2. 只关窗口模糊、保留面板/小部件：`frosted_windows = false`（窗口内元素动作是主要成本来源）
-  3. 减少同屏磨砂窗口数量/面积
-- **我们的策略**：**暂不做本地优化补丁** —— 上游视为预期限制，方案空间未明；
-  若日后要做，须先按 #2795 的方法给出真机可复现数据（见 `UPSTREAMING.md` 的红线）
-- **状态**：`已定性（已知效率限制，非缺陷）`
-
-### K-007 · 内存占用偏高 / applet CPU 偶高
-
-- **现象**：COSMIC 全量进程常驻约 **1.7–1.9 GB**；`cosmic-files-applet` CPU 偶发 15–20%
-- **影响**：在 15 GB 内存机器上可接受，但与"Rust 省内存"的直觉不符（与社区评测结论一致）
-- **证据**：`ps -eo comm,rss | grep cosmic` 汇总；`cosmic-files-applet.scope` 记录 593 MB peak
-- **状态**：`仅记录`（`docs/PERFORMANCE.md` 建立基线后跟踪）
-
-### K-008 · fcitx5 需按合成器重新绑定
-
-- **现象**：fcitx5 是「每个合成器一份」的：在 KDE(Ctrl+Alt+F2) 与 COSMIC(Ctrl+Alt+F3) 之间切换后，中文输入失效
-- **影响**：切换会话后需重绑输入法
-- **规避**：`scripts/60-verify.sh --rebind-ime`（等价脚本），自动识别当前活动会话并重绑
-- **证据**：fcitx5 日志 `Using Wayland native input method protocol: 1`（说明 cosmic-comp 的 `zwp_input_method_v2` 已被使用，协议本身没问题）
-- **状态**：`已内置规避`
-
----
-
-## 运维提示（非缺陷）
-
-| 项 | 说明 |
-|---|---|
-| 首次构建耗时长 | 约 1.5–4 小时（30 个组件各自编译）；用 `sccache` 后重复构建大幅缩短 |
-| 磁盘占用 | 各组件 `target/` 合计约 37 GB；`scripts/30-build.sh --slim` 可清理（保留 sccache）|
-| 首次拉取工具链 | 各组件 `rust-toolchain.toml` 会触发 rustup 下载对应版本（如 1.93.1）|
-| sysext 生效期间 | `/usr`、`/opt` 为只读叠加层，此时**不要用包管理器装/升级软件**（先卸载扩展）|

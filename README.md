@@ -74,10 +74,10 @@ git clone <本仓库> && cd cosmic-loongarch
 
 | 编号 | 目标仓库 | 标题 | 分级 | 上游状态 | 说明 |
 |---|---|---|---|---|---|
-| 0001 | cosmic-comp | 动画开关与速度倍率 | `upstreamable` | 参考 [#376](https://github.com/pop-os/cosmic-comp/issues/376) / PR [#2209](https://github.com/pop-os/cosmic-comp/pull/2209)（未合并）| `animations = (enabled, speed)`；补 `#[serde(default)]`；新增 `src/animations.rs` 全局。配置热生效 |
-| 0002 | cosmic-comp | DMABUF 跨渲染节点纹理导入（花屏）| 待定 | — | 见 `docs/KNOWN-ISSUES.md` K-003（规划中）|
-| 0004 | — | *(K-010 磨砂效率：已知限制，暂不做补丁)* | — | 上游 #2650 / #2795 | 记录见 `docs/KNOWN-ISSUES.md` |
-| 0003 | libcosmic/iced | 表格控件文本缺中文脚本回退（System Monitor 豆腐块）| 待评估 | — | 见 `docs/KNOWN-ISSUES.md` K-009（需 vendoring libcosmic）|
+| 0001 | cosmic-comp | 动画开关与速度倍率 | `upstreamable` | 参考 [#376](https://github.com/pop-os/cosmic-comp/issues/376) / PR [#2209](https://github.com/pop-os/cosmic-comp/pull/2209)（未合并）| `animations = (enabled, speed)`；补 `#[serde(default)]`；新增 `src/animations.rs` 全局。配置热生效。**已实现并真机验证** |
+| 0002 | cosmic-comp | DMABUF 跨渲染节点纹理导入（偶发花屏）| 待定 | — | 见 `docs/KNOWN-ISSUES.md` K-003（规划中）|
+| 0003 | libcosmic/iced | 表格控件文本缺中文脚本回退（System Monitor 豆腐块）| 待评估 | 上游无同类 issue | 见 `docs/KNOWN-ISSUES.md` K-009（需 vendoring libcosmic）|
+| — | — | *（K-010 磨砂效率属上游已知限制，暂不做补丁）* | — | [#2650](https://github.com/pop-os/cosmic-comp/issues/2650) / [#2795](https://github.com/pop-os/cosmic-comp/issues/2795) | 记录见 `docs/KNOWN-ISSUES.md` K-010 |
 
 ## 已知问题
 

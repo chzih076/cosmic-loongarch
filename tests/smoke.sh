@@ -4,7 +4,14 @@
 # SPDX-License-Identifier: GPL-3.0
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-BUILD_DIR="${COSMIC_BUILD_DIR:-$HOME/cosmic-build}"
+# 构建目录解析顺序：环境变量 → state/build-dir（本机记录）→ 默认值
+if [ -n "${COSMIC_BUILD_DIR:-}" ]; then
+  BUILD_DIR="$COSMIC_BUILD_DIR"
+elif [ -f "$REPO_ROOT/state/build-dir" ]; then
+  BUILD_DIR="$(cat "$REPO_ROOT/state/build-dir")"
+else
+  BUILD_DIR="$HOME/cosmic-build"
+fi
 
 echo "== cosmic-loongarch smoke test =="
 echo "仓库:   $REPO_ROOT"
@@ -18,7 +25,10 @@ chk "upstream.lock 可解析（含 cosmic-epoch）" "grep -q '^cosmic-epoch ' '$
 chk "upstream.lock 条目数 > 20" "[ \$(grep -vc '^#' '$REPO_ROOT/upstream.lock') -gt 20 ]"
 chk "构建树存在且是 git 仓库" "[ -d '$BUILD_DIR/.git' ]"
 chk "构建树 commit 与 lock 一致" "[ \"\$(git -C '$BUILD_DIR' rev-parse HEAD)\" = \"\$(awk '/^cosmic-epoch /{print \$2}' '$REPO_ROOT/upstream.lock')\" ]"
-chk "构建树工作区干净（补丁已记录或未应用）" "[ -z \"\$(git -C '$BUILD_DIR' status --porcelain --untracked-files=no)\" ]"
+# 允许"已打补丁"状态：工作区干净，或本仓库已记录补丁应用（此时子模块必然显示为已修改）
+chk "构建树状态可接受（干净，或已记录补丁）" "\
+  [ -z \"\$(git -C '$BUILD_DIR' status --porcelain --untracked-files=no)\" ] \
+  || { [ -s '$REPO_ROOT/state/patches-applied.txt' ] && [ -f '$REPO_ROOT/patches/cosmic-comp/0001-animations-enabled-and-speed.patch' ]; }"
 chk "sysext 产物存在" "[ -d '$BUILD_DIR/cosmic-sysext' ]"
 chk "扩展元数据存在" "[ -f '$BUILD_DIR/cosmic-sysext/usr/lib/extension-release.d/extension-release.cosmic-sysext' ]"
 chk "关键二进制存在" "[ -x '$BUILD_DIR/cosmic-sysext/usr/bin/cosmic-comp' ]"
