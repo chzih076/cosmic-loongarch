@@ -143,6 +143,33 @@
 - **状态**：`观察中`（已定性：表格文本路径缺回退；候选补丁 0003 = 给 libcosmic 的 table 文本走标准文本管线，
   但 libcosmic 是 git 依赖，需 vendoring/patch 机制，工程量较大）
 
+### K-011 · 打开设置时主题回退成暗色（主题配置缺必填字段）
+
+- **现象**：打开 COSMIC 设置（或相关应用）时界面变成**暗色**，需要在「外观」里点一下才恢复正常
+- **根因**（已定位，非用户操作问题）：
+  `cosmic-theme` 的 `CosmicTheme` 在处理 1.10.0 新增的 `pub list_button: Component` 字段时
+  **没有 `#[serde(default)]`**，而用户主题配置目录里**没有 `list_button` 这个键** →
+  `get_entry` 报 `GetKey("list_button", NotFound)` →
+  **整个亮色主题加载失败** → 回退到内置默认（暗色）：
+  ```
+  cosmic-comp[...]: error loading system light theme
+  cosmic::theme: error loading system light theme
+      error=GetKey("list_button", Os { code: 2, kind: NotFound })
+  ```
+  「触发一次外观设置」会临时把正确主题广播给所有应用，但只要键仍然缺失，下次启动依旧回退
+- **同类**：与补丁 0001 里给 `AnimationConfig` 补 `#[serde(default)]` 是同一类问题
+  （上游 2026-09 为"缺字段会重置用户配置"立过规）
+- **本地修复（已执行，保留用户配色）**：
+  ```bash
+  # 用同一主题的 icon_button 作形状模板（两者同为 Component 类型）
+  cp ~/.config/cosmic/com.system76.CosmicTheme.Light/v2/icon_button \
+     ~/.config/cosmic/com.system76.CosmicTheme.Light/v2/list_button
+  cp ~/.config/cosmic/com.system76.CosmicTheme.Dark/v2/icon_button \
+     ~/.config/cosmic/com.system76.CosmicTheme.Dark/v2/list_button
+  ```
+  修复后真实错误数归零（复核时需过滤掉自身命令行产生的日志）
+- **上游应做的**：给 `CosmicTheme` 的新增字段补 `#[serde(default)]`，让缺失键回落到默认值而不是整主题失败
+- **状态**：`已本地修复`
 ### K-010 · 磨砂玻璃的效率成本（不是 bug，上游已知的预期限制）
 
 - **现象**：开启磨砂玻璃后，请求模糊的窗口**内部元素**一有动作（滚动、进度动画、列表刷新等），
