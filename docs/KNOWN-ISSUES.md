@@ -169,7 +169,27 @@
   ```
   修复后真实错误数归零（复核时需过滤掉自身命令行产生的日志）
 - **上游应做的**：给 `CosmicTheme` 的新增字段补 `#[serde(default)]`，让缺失键回落到默认值而不是整主题失败
-- **状态**：`已本地修复`
+- **后续发现（2026-10-13 晚，重启后复核）**：
+  - 补 `list_button` 后，**新会话亮色主题 0 报错** ✔（修复生效）
+  - 但明暗两套主题的键集不一致：`Light` 有 `accent_text`/`window_hint`（均为 `None`），
+    **`Dark` 缺这两个键** → 暗色主题加载时会走同样的失败路径 ✗
+  - 这正是"**打开设置有概率变成暗色**"的来源：设置等应用启动时**先按暗色主题加载**，
+    暗色加载失败就停在暗色样式；触发一次外观设置后亮色被广播 → 看起来"恢复"
+- **完整修复（已执行）**：
+  ```bash
+  T=~/.config/cosmic/com.system76.CosmicTheme
+  cp $T/Light/v2/icon_button $T/Light/v2/list_button      # 亮色补 list_button
+  cp $T/Dark/v2/icon_button  $T/Dark/v2/list_button       # 暗色补 list_button
+  cp $T/Light/v2/accent_text $T/Dark/v2/accent_text       # None
+  cp $T/Light/v2/window_hint $T/Dark/v2/window_hint       # None
+  ```
+  之后明暗两个分支加载错误均为 **0**（需过滤自身命令行产生的日志）
+- **排查手法（可复用）**：
+  ```bash
+  journalctl -b --since '-5min' | grep -E 'error loading system (light|dark) theme|GetKey\(' \
+    | grep -vE 'dsh-subprocess|bash -c'     # 后者会匹配到自身命令行，必须过滤
+  ```
+- **状态**：`已本地修复（明暗两套主题均已补齐）`
 ### K-010 · 磨砂玻璃的效率成本（不是 bug，上游已知的预期限制）
 
 - **现象**：开启磨砂玻璃后，请求模糊的窗口**内部元素**一有动作（滚动、进度动画、列表刷新等），
