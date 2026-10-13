@@ -86,8 +86,47 @@
 - **上游状态**：issue **#376**（open，社区活跃）；PR **#2209**（open，`mergeable_state: dirty`，最后活动 2026-07-29）
   - #2209 与当前 master 的冲突面：5 文件 7 处（config 结构体 1、`src/config/mod.rs` 1、`backend/render/mod.rs` 1、`shell/workspace.rs` 1、`shell/zoom.rs` 3）
   - #2209 缺少 `#[serde(default)]`（上游 2026-09 才为同类问题立规矩：缺字段会**重置用户配置**）
-- **计划**：补丁 0001 —— `{ enabled: bool, speed: f32 }`，补 `#[serde(default)]`，并在动画采样处应用倍率
-- **状态**：`待修（计划补丁 0001）`
+- **已实现**：补丁 [`0001-animations-enabled-and-speed.patch`](../patches/cosmic-comp/0001-animations-enabled-and-speed.patch)
+  - 配置：`~/.config/cosmic/com.system76.CosmicComp/v1/animations` = `(enabled: true, speed: 2.0)`
+  - `enabled = false`：跳过动画、直接落到终态（沿用 PR #2209 经维护者认可的状态机语义，而非"零时长动画"）
+  - `speed`：时长倍率（0.25–8.0 夹取，1.0 = 上游默认），通过进程内全局 `src/animations.rs` 读取，
+    覆盖窗口开关/最小化、平铺重排、标签滚动、全屏过渡、拖动缩放、缩放视图等全部时长常量
+  - 相对 PR #2209 的增强：补 `#[serde(default)]`（否则以后新增字段会重置用户配置）、新增 `speed`、适配当前 master（原 PR 树冲突 5 文件 7 处）
+- **状态**：`已实现（补丁 0001）`
+
+### K-009 · COSMIC System Monitor 进程列表的中文显示异常
+
+- **现象**：`cosmic-monitor` 进程列表中含中文的条目显示不正常
+- **影响**：仅影响该视图的观感/可读性；进程本身无异常
+- **已排除**：**不是缺字体**。本机 2664 个字体、其中 **100 个支持中文**，且：
+  ```
+  $ fc-match monospace              → NotoSansMonoCJKsc-Regular.otf "Noto Sans Mono CJK SC"
+  $ fc-match 'Noto Sans Mono CJK SC' → 同上
+  $ fc-list :lang=zh | wc -l        → 100
+  cosmic-monitor 二进制内嵌字体名：Noto Sans CJK SC/TC/HK/KR/JP、Noto Color Emoji、DejaVu Sans Mono
+  ```
+- **可疑方向**（待定性）：
+  1. **字形缺失（豆腐块 □□□）**：iced/cosmic-text 的**脚本回退**在该控件路径上未命中中文族。
+     二进制中可见 `cosmic-text-0.19.0/src/font/fallback/mod.rs` 及其错误串
+     `Failed to find script fallback for` / `Failed to find preset fallback for` / `Failed to find any fallback for`；
+     iced 侧还有 `iced/renderer/src/fallback.rs`。
+  2. **编码错乱（乱码如 æ˜Ÿ）**：读取进程名/命令行时按非 UTF-8 解释（`/proc/*/comm`、`cmdline`）。
+     `ps -eo comm` 实测**无**非 ASCII 项，因此需确认异常条目来自哪个字段（cmdline？desktop 名称？）。
+- **判定方法**：分别看「豆腐块」还是「乱码」——前者查字形回退，后者查编码。
+  另可运行：`fc-match 'monospace:lang=zh'`（本机返回 `Droid Sans Fallback`，可作 fontconfig 侧对照）。
+- **规避**：暂无（不改变系统字体配置）；可先记录截图与具体条目名
+#### 复现与证据（2026-10-13，截图 `/home/lik/图片/Screenshot_20261013_162922.png`）
+
+- **界面文字正常、仅列表项豆腐块**：同一窗口内「应用程序 / 进程 / 详情 / 内存 / 磁盘」等中文正常，
+  而表格里的应用名显示为 `COSMIC □□□□□□`、`Discover □□□□` → 问题在**表格单元格的文本绘制路径**
+- **数据无误**：`Name[zh_CN]=Discover 软件中心` 等 363 个 `.desktop` 文件**全部为合法 UTF-8**（0 个非 UTF-8）
+- **字体齐全**：`cosmic-text-0.19.0/src/font/fallback/unix.rs` 回退表要求的中文族
+  `Noto Sans CJK SC/HK/JP/KR/TC` **本机全部已安装**；`fc-match monospace` → `Noto Sans Mono CJK SC`
+- **结论（高可信）**：不是缺字体、不是编码，而是 **libcosmic/iced 的表格控件在绘制文本时未走脚本回退**
+  （主 UI 文本走正常路径，表格走另一条路径）
+
+- **状态**：`观察中`（已定性：表格文本路径缺回退；候选补丁 0003 = 给 libcosmic 的 table 文本走标准文本管线，
+  但 libcosmic 是 git 依赖，需 vendoring/patch 机制，工程量较大）
 
 ### K-007 · 内存占用偏高 / applet CPU 偶高
 

@@ -1,0 +1,2245 @@
+Upstream: pop-os/cosmic-comp@41497b42d9744d9963c4c6d17e8add49489b45ee
+Grade: upstreamable
+Issue: https://github.com/pop-os/cosmic-comp/issues/376
+Related: https://github.com/pop-os/cosmic-comp/pull/2209
+Evidence: |
+  · 编译：cargo build --release 通过（cosmic-comp v1.0.0，Finished release profile）
+  · 配置：~/.config/cosmic/com.system76.CosmicComp/v1/animations = (enabled: true, speed: 2.0)
+          启动日志出现 "animations: enabled=true speed=2.00"（src/animations.rs 的 tracing::info!）
+  · 变更范围：13 文件；其中 src/animations.rs 为新增（进程内全局：enabled 门控 + speed 倍率）
+  · 与上游 PR #2209 的关系：采用其“跳过动画而非零时长动画”的状态机语义（已获维护者认可），
+    并补上其缺失的 #[serde(default)]（上游 2026-09 为同类问题立规：缺字段会重置用户配置），
+    同时新增 speed 时长倍率（社区在 #376 中反复要求 float 滑块）。
+diff --git a/.gitignore b/.gitignore
+index 93276fce..3cf9e843 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -12,5 +12,6 @@ target
+ vendor
+ vendor.tar
+ .vscode
++.idea
+ *.log
+ /result
+diff --git a/cosmic-comp-config/src/lib.rs b/cosmic-comp-config/src/lib.rs
+index 193fd0db..57c8e61b 100644
+--- a/cosmic-comp-config/src/lib.rs
++++ b/cosmic-comp-config/src/lib.rs
+@@ -74,6 +74,32 @@ pub enum DecorationPreference {
+     ServerSide,
+ }
+ 
++/// 动画配置（cosmic-loongarch 补丁 0001）
++///
++/// * `enabled = false`：跳过动画、直接落到终态（不采用"零时长"动画模型，
++///   避免状态机卡在过渡中间）；
++/// * `speed`：动画时长倍率。1.0 = 上游默认，2.0 = 快一倍，0.5 = 慢一倍。
++#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
++#[serde(default)]
++pub struct AnimationConfig {
++    pub enabled: bool,
++    pub speed: f32,
++}
++
++impl Default for AnimationConfig {
++    fn default() -> Self {
++        Self { enabled: true, speed: 1.0 }
++    }
++}
++
++impl AnimationConfig {
++    /// 时长倍率：把基准时长换算为实际时长（speed 越大越短）
++    pub fn scale_duration(&self, base: std::time::Duration) -> std::time::Duration {
++        let s = self.speed.clamp(0.25, 8.0);
++        base.mul_f32(1.0 / s)
++    }
++}
++
+ #[derive(Clone, Debug, PartialEq, CosmicConfigEntry)]
+ #[version = 1]
+ pub struct CosmicCompConfig {
+@@ -105,6 +131,7 @@ pub struct CosmicCompConfig {
+     pub xwayland_eavesdropping: XwaylandEavesdropping,
+     /// The threshold before windows snap themselves to output edges
+     pub edge_snap_threshold: u32,
++    pub animations: AnimationConfig,
+     pub accessibility_zoom: ZoomConfig,
+     pub appearance_settings: AppearanceConfig,
+     /// When the cursor hides itself: idle, fullscreen idle, typing, touch
+@@ -147,6 +174,7 @@ impl Default for CosmicCompConfig {
+             descale_xwayland: XwaylandDescaling::Fractional,
+             xwayland_eavesdropping: XwaylandEavesdropping::default(),
+             edge_snap_threshold: 0,
++            animations: AnimationConfig::default(),
+             accessibility_zoom: ZoomConfig::default(),
+             appearance_settings: AppearanceConfig::default(),
+             cursor_hide: CursorHideConfig::default(),
+diff --git a/src/animations.rs b/src/animations.rs
+new file mode 100644
+index 00000000..468012bc
+--- /dev/null
++++ b/src/animations.rs
+@@ -0,0 +1,43 @@
++// SPDX-License-Identifier: GPL-3.0
++//
++// cosmic-loongarch 补丁 0001：动画开关与速度倍率的进程内全局。
++//
++// 上游 PR #2209 以“把 bool 穿透到各状态机”的方式实现 enabled；本补丁在此基础上：
++//   * 保留该穿透（enabled 的正确语义：跳过动画而非零时长动画）；
++//   * 追加 `speed` 时长倍率，通过本模块的全局读取，避免再穿透 115 处调用点；
++//   * 为无法方便拿到状态的位置（如全屏过渡闭包）提供 enabled() 查询。
++use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
++use std::time::Duration;
++
++use cosmic_comp_config::AnimationConfig;
++
++static ENABLED: AtomicBool = AtomicBool::new(true);
++static SPEED_MILLI: AtomicU32 = AtomicU32::new(1000); // speed * 1000
++
++/// 应用配置（由 config 模块在加载与配置变更时调用）
++pub fn apply(cfg: &AnimationConfig) {
++    ENABLED.store(cfg.enabled, Ordering::Relaxed);
++    let speed = if cfg.speed.is_finite() { cfg.speed.clamp(0.25, 8.0) } else { 1.0 };
++    SPEED_MILLI.store((speed * 1000.0) as u32, Ordering::Relaxed);
++    tracing::info!(
++        "animations: enabled={} speed={:.2}",
++        cfg.enabled,
++        speed
++    );
++}
++
++/// 动画是否启用
++pub fn enabled() -> bool {
++    ENABLED.load(Ordering::Relaxed)
++}
++
++/// 当前速度倍率（1.0 = 上游默认）
++pub fn speed() -> f32 {
++    SPEED_MILLI.load(Ordering::Relaxed) as f32 / 1000.0
++}
++
++/// 按 speed 缩放时长（speed 越大时长越短）
++pub fn scale(base: Duration) -> Duration {
++    let milli = SPEED_MILLI.load(Ordering::Relaxed).max(250);
++    base.mul_f32(1000.0 / milli as f32)
++}
+diff --git a/src/backend/render/mod.rs b/src/backend/render/mod.rs
+index 9ad61588..0ebddfab 100644
+--- a/src/backend/render/mod.rs
++++ b/src/backend/render/mod.rs
+@@ -1,3 +1,4 @@
++use std::time::Instant;
+ // SPDX-License-Identifier: GPL-3.0-only
+ 
+ use std::{
+@@ -6,7 +7,6 @@ use std::{
+     collections::HashMap,
+     ops::ControlFlow,
+     sync::{Arc, Weak},
+-    time::Instant,
+ };
+ 
+ #[cfg(feature = "debug")]
+@@ -27,12 +27,12 @@ use crate::{
+     },
+     config::ScreenFilter,
+     shell::{
+-        CosmicMappedRenderElement, OutputId, OverviewMode, SeatExt, Trigger, WorkspaceDelta,
++        CosmicMappedRenderElement, OutputId, SeatExt, Trigger, WorkspaceDelta,
+         WorkspaceRenderElement,
+         element::CosmicMappedKey,
+         focus::{FocusTarget, Stage, render_input_order, target::WindowGroup},
+         grabs::{SeatMenuGrabState, SeatMoveGrabState},
+-        layout::tiling::ANIMATION_DURATION,
++        overview_fade_alpha,
+         zoom::ZoomState,
+     },
+     utils::{prelude::*, quirks::workspace_overview_is_open},
+@@ -963,23 +963,7 @@ where
+                 }
+             }
+             Stage::StickyPopups(layout) => {
+-                let alpha = match &overview.0 {
+-                    OverviewMode::Started(_, started) => {
+-                        (1.0 - (Instant::now().duration_since(*started).as_millis()
+-                            / ANIMATION_DURATION.as_millis()) as f32)
+-                            .max(0.0)
+-                            * 0.4
+-                            + 0.6
+-                    }
+-                    OverviewMode::Ended(_, ended) => {
+-                        ((Instant::now().duration_since(*ended).as_millis()
+-                            / ANIMATION_DURATION.as_millis()) as f32)
+-                            * 0.4
+-                            + 0.6
+-                    }
+-                    OverviewMode::Active(_) => 0.6,
+-                    OverviewMode::None => 1.0,
+-                };
++                let alpha = overview_fade_alpha(&overview.0);
+ 
+                 layout.render_popups(renderer, alpha, scanout_node, &mut |elem| {
+                     if let Some(elem) = crop_to_output(elem.into()) {
+@@ -988,23 +972,7 @@ where
+                 });
+             }
+             Stage::Sticky(layout) => {
+-                let alpha = match &overview.0 {
+-                    OverviewMode::Started(_, started) => {
+-                        (1.0 - (Instant::now().duration_since(*started).as_millis()
+-                            / ANIMATION_DURATION.as_millis()) as f32)
+-                            .max(0.0)
+-                            * 0.4
+-                            + 0.6
+-                    }
+-                    OverviewMode::Ended(_, ended) => {
+-                        ((Instant::now().duration_since(*ended).as_millis()
+-                            / ANIMATION_DURATION.as_millis()) as f32)
+-                            * 0.4
+-                            + 0.6
+-                    }
+-                    OverviewMode::Active(_) => 0.6,
+-                    OverviewMode::None => 1.0,
+-                };
++                let alpha = overview_fade_alpha(&overview.0);
+ 
+                 let current_focus = (!move_active && is_active_space)
+                     .then_some(last_active_seat)
+diff --git a/src/config/mod.rs b/src/config/mod.rs
+index 9bdef7c1..d8e390a6 100644
+--- a/src/config/mod.rs
++++ b/src/config/mod.rs
+@@ -49,8 +49,9 @@ mod types;
+ use cosmic::config::CosmicTk;
+ pub use cosmic_comp_config::EdidProduct;
+ use cosmic_comp_config::{
+-    ActivationPolicy, AppearanceConfig, CosmicCompConfig, CursorHideConfig, DecorationPreference,
+-    KeyboardConfig, TileBehavior, XkbConfig, XwaylandDescaling, XwaylandEavesdropping, ZoomConfig,
++    ActivationPolicy, AnimationConfig, AppearanceConfig, CosmicCompConfig, CursorHideConfig,
++    DecorationPreference, KeyboardConfig, TileBehavior, XkbConfig, XwaylandDescaling,
++    XwaylandEavesdropping, ZoomConfig,
+     input::{DeviceState as InputDeviceState, InputConfig, TouchpadOverride},
+     output::comp::{
+         OutputConfig, OutputInfo, OutputState, OutputsConfig, TransformDef, load_outputs,
+@@ -192,6 +193,9 @@ impl Config {
+                 c
+             });
+ 
++        // cosmic-loongarch 补丁 0001：把动画配置写入进程内全局（供 speed 与门控读取）
++        crate::animations::apply(&cosmic_comp_config.animations);
++
+         // `cursor_hide_timeout` was replaced by the grouped `cursor_hide` key.
+         // Seed the new key once so configs hand-edited before the rename keep
+         // working; the old file is left in place so a downgrade still reads it.
+@@ -982,6 +986,18 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut
+                     state.common.config.cosmic_conf.edge_snap_threshold = new;
+                 }
+             }
++            "animations" => {
++                let new = get_config::<AnimationConfig>(&config, "animations");
++                if new != state.common.config.cosmic_conf.animations {
++                    state.common.config.cosmic_conf.animations = new;
++                    // cosmic-loongarch 补丁 0001：同步进程内全局（speed 热生效）
++                    crate::animations::apply(&new);
++                    state.common.update_config();
++                    for output in state.common.shell.read().outputs() {
++                        state.backend.schedule_render(output);
++                    }
++                }
++            }
+             "accessibility_zoom" => {
+                 let new = get_config::<ZoomConfig>(&config, "accessibility_zoom");
+                 if new != state.common.config.cosmic_conf.accessibility_zoom {
+diff --git a/src/lib.rs b/src/lib.rs
+index 98bfa2a3..5a72f1d9 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -36,6 +36,7 @@ use clap_lex::RawArgs;
+ 
+ use std::error::Error;
+ 
++pub mod animations;
+ pub mod backend;
+ pub mod config;
+ pub mod dbus;
+diff --git a/src/shell/element/mod.rs b/src/shell/element/mod.rs
+index c7e799be..af1ece6b 100644
+--- a/src/shell/element/mod.rs
++++ b/src/shell/element/mod.rs
+@@ -541,13 +541,20 @@ impl CosmicMapped {
+         (output, overlap): (&Output, Rectangle<i32, Logical>),
+         theme: cosmic::Theme,
+         appearance: AppearanceConfig,
++        animations_enabled: bool,
+     ) {
+         if let CosmicMappedInternal::Window(window) = &self.element {
+             let surface = window.surface();
+             let activated = surface.is_activated(true);
+             let handle = window.loop_handle();
+ 
+-            let stack = CosmicStack::new(std::iter::once(surface), handle, theme, appearance);
++            let stack = CosmicStack::new(
++                std::iter::once(surface),
++                handle,
++                theme,
++                appearance,
++                animations_enabled,
++            );
+             if let Some(geo) = *self.last_geometry.lock().unwrap() {
+                 stack.set_geometry(geo.to_global(output));
+             }
+@@ -910,6 +917,14 @@ impl CosmicMapped {
+         }
+     }
+ 
++    pub(crate) fn update_animations_enabled(&self, enabled: bool) {
++        match &self.element {
++            CosmicMappedInternal::Window(_) => {}
++            CosmicMappedInternal::Stack(s) => s.update_animations_enabled(enabled),
++            CosmicMappedInternal::_GenericCatcher(_) => {}
++        }
++    }
++
+     pub(crate) fn force_redraw(&self) {
+         match &self.element {
+             CosmicMappedInternal::Window(w) => w.force_redraw(),
+diff --git a/src/shell/element/stack.rs b/src/shell/element/stack.rs
+index f4a37bfe..0c2a41f7 100644
+--- a/src/shell/element/stack.rs
++++ b/src/shell/element/stack.rs
+@@ -115,6 +115,7 @@ pub struct CosmicStackInternal {
+     windows: Mutex<Vec<CosmicSurface>>,
+     active: AtomicUsize,
+     activated: AtomicBool,
++    animations_enabled: AtomicBool,
+     group_focused: AtomicBool,
+     previous_index: Mutex<Option<(Serial, usize)>>,
+     scroll_to_focus: AtomicBool,
+@@ -158,6 +159,7 @@ impl CosmicStack {
+         handle: LoopHandle<'static, crate::state::State>,
+         mut theme: cosmic::Theme,
+         appearance: AppearanceConfig,
++        animations_enabled: bool,
+     ) -> CosmicStack {
+         theme.transparent = theme.cosmic().frosted_windows;
+         let windows = windows.map(Into::into).collect::<Vec<_>>();
+@@ -175,6 +177,7 @@ impl CosmicStack {
+                 windows: Mutex::new(windows),
+                 active: AtomicUsize::new(0),
+                 activated: AtomicBool::new(false),
++                animations_enabled: AtomicBool::new(animations_enabled),
+                 group_focused: AtomicBool::new(false),
+                 previous_index: Mutex::new(None),
+                 scroll_to_focus: AtomicBool::new(false),
+@@ -892,6 +895,16 @@ impl CosmicStack {
+         }
+     }
+ 
++    pub fn update_animations_enabled(&self, enabled: bool) {
++        if self
++            .0
++            .with_program(|p| p.animations_enabled.swap(enabled, Ordering::SeqCst) != enabled)
++        {
++            self.0.force_redraw();
++            self.0.force_update();
++        }
++    }
++
+     pub(crate) fn force_redraw(&self) {
+         self.0.force_redraw();
+     }
+@@ -1347,6 +1360,7 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
+                     active,
+                     windows[active].is_activated(false),
+                     group_focused,
++                    stack.animations_enabled.load(Ordering::SeqCst),
+                 )
+                 .id(SCROLLABLE_ID.clone())
+                 .force_visible(
+diff --git a/src/shell/element/stack/tabs.rs b/src/shell/element/stack/tabs.rs
+index 9dd5ef81..92a65976 100644
+--- a/src/shell/element/stack/tabs.rs
++++ b/src/shell/element/stack/tabs.rs
+@@ -40,6 +40,7 @@ pub struct Tabs<'a, Message> {
+     id: Option<Id>,
+     height: Length,
+     width: Length,
++    animations_enabled: bool,
+     group_focused: bool,
+     scroll_to: Option<usize>,
+ }
+@@ -62,6 +63,7 @@ struct TabAnimationState {
+ /// The local state of [`Tabs`].
+ #[derive(Debug, Clone)]
+ pub struct State {
++    animations_enabled: bool,
+     offset_x: Offset,
+     scroll_animation: Option<ScrollAnimationState>,
+     scroll_to: Option<usize>,
+@@ -76,7 +78,7 @@ impl Scrollable for State {
+ 
+     fn scroll_to(&mut self, offset: AbsoluteOffset<Option<f32>>) {
+         let new_offset = Offset::Absolute(offset.x.unwrap_or(0.0).max(0.0));
+-        self.scroll_animation = Some(ScrollAnimationState {
++        self.scroll_animation = self.animations_enabled.then_some(ScrollAnimationState {
+             start_time: Instant::now(),
+             start: self.offset_x,
+             end: new_offset,
+@@ -91,7 +93,7 @@ impl Scrollable for State {
+         _bounds: Rectangle,
+         _content_bounds: Rectangle,
+     ) {
+-        self.scroll_animation = Some(ScrollAnimationState {
++        self.scroll_animation = self.animations_enabled.then_some(ScrollAnimationState {
+             start_time: Instant::now(),
+             start: self.offset_x,
+             end: self.offset_x,
+@@ -103,6 +105,7 @@ impl Scrollable for State {
+ impl Default for State {
+     fn default() -> Self {
+         State {
++            animations_enabled: true,
+             offset_x: Offset::Absolute(0.),
+             scroll_animation: None,
+             scroll_to: None,
+@@ -127,8 +130,14 @@ impl Offset {
+     }
+ }
+ 
+-const SCROLL_ANIMATION_DURATION: Duration = Duration::from_millis(200);
+-const TAB_ANIMATION_DURATION: Duration = Duration::from_millis(150);
++/// 标签滚动动画时长（受 animations.speed 影响）
++fn scroll_animation_duration() -> Duration {
++    crate::animations::scale(Duration::from_millis(200))
++}
++/// 标签切换动画时长（受 animations.speed 影响）
++fn tab_animation_duration() -> Duration {
++    crate::animations::scale(Duration::from_millis(150))
++}
+ 
+ impl<Message> Tabs<'_, Message>
+ where
+@@ -139,6 +148,7 @@ where
+         active: usize,
+         activated: bool,
+         group_focused: bool,
++        animations_enabled: bool,
+     ) -> Self {
+         let tabs = tabs.into_iter().enumerate().map(|(i, tab)| {
+             let rule = if activated {
+@@ -211,6 +221,7 @@ where
+             id: None,
+             width: Length::Fill,
+             height: Length::Shrink,
++            animations_enabled,
+             group_focused,
+             scroll_to: None,
+         }
+@@ -238,21 +249,31 @@ where
+ }
+ 
+ impl State {
++    fn set_animations_enabled(&mut self, enabled: bool) {
++        self.animations_enabled = enabled;
++    }
++
+     fn next_tab_animation(&self) -> Option<&TabAnimationState> {
++        if !self.animations_enabled {
++            return None;
++        }
++
+         let now = Instant::now();
+ 
+         self.tab_animations
+             .iter()
+-            .find(|anim| now.duration_since(anim.start_time) <= TAB_ANIMATION_DURATION)
++            .find(|anim| now.duration_since(anim.start_time) <= tab_animation_duration())
+     }
+ 
+     pub fn offset(&self, bounds: Rectangle, content_bounds: Size) -> Vector {
+-        if let Some(animation) = self.scroll_animation {
++        if self.animations_enabled
++            && let Some(animation) = self.scroll_animation
++        {
+             let percentage = {
+                 let percentage = Instant::now()
+                     .duration_since(animation.start_time)
+                     .as_millis() as f32
+-                    / SCROLL_ANIMATION_DURATION.as_millis() as f32;
++                    / scroll_animation_duration().as_millis() as f32;
+ 
+                 ease(EaseInOutCubic, 0.0, 1.0, percentage)
+             };
+@@ -277,7 +298,7 @@ impl State {
+         let start_time = Instant::now();
+ 
+         if let Some(animation) = self.scroll_animation.as_ref()
+-            && start_time.duration_since(animation.start_time) > SCROLL_ANIMATION_DURATION
++            && start_time.duration_since(animation.start_time) > scroll_animation_duration()
+         {
+             self.scroll_animation.take();
+         }
+@@ -293,7 +314,7 @@ impl State {
+         if let Some(mut animation) = tab_animations.pop_front() {
+             let mut set_next_start = false;
+ 
+-            while start_time.duration_since(animation.start_time) > TAB_ANIMATION_DURATION {
++            while start_time.duration_since(animation.start_time) > tab_animation_duration() {
+                 set_next_start = true;
+ 
+                 if let Some(next) = tab_animations.pop_front() {
+@@ -347,6 +368,10 @@ where
+ 
+     #[allow(clippy::too_many_lines)]
+     fn layout(&mut self, tree: &mut Tree, renderer: &cosmic::Renderer, limits: &Limits) -> Node {
++        tree.state
++            .downcast_mut::<State>()
++            .set_animations_enabled(self.animations_enabled);
++
+         let limits = limits.width(self.width).height(self.height);
+         let element_count = self.elements.len();
+         // calculate the smallest possible size
+@@ -569,7 +594,7 @@ where
+                     let percentage = Instant::now()
+                         .duration_since(animation.start_time)
+                         .as_millis() as f32
+-                        / TAB_ANIMATION_DURATION.as_millis() as f32;
++                        / tab_animation_duration().as_millis() as f32;
+                     ease(EaseOutCubic, 0.0, 1.0, percentage)
+                 } else {
+                     1.0
+@@ -698,6 +723,7 @@ where
+         operation: &mut dyn Operation<()>,
+     ) {
+         let state = tree.state.downcast_mut::<State>();
++        state.set_animations_enabled(self.animations_enabled);
+         let bounds = layout.bounds();
+         let content_layout = layout.children().next().unwrap();
+         let content_bounds = content_layout.bounds();
+@@ -738,6 +764,7 @@ where
+         viewport: &Rectangle,
+     ) {
+         let state = tree.state.downcast_mut::<State>();
++        state.set_animations_enabled(self.animations_enabled);
+         state.cleanup_old_animations();
+ 
+         let mut bounds = layout.bounds();
+@@ -792,7 +819,9 @@ where
+         };
+ 
+         if unknown_keys || changes.is_some() {
+-            if !scrolling || !matches!(changes, Some(Difference::Focus)) {
++            if state.animations_enabled
++                && (!scrolling || !matches!(changes, Some(Difference::Focus)))
++            {
+                 let start_time = Instant::now();
+ 
+                 State::discard_expired_tab_animations(&mut state.tab_animations, start_time);
+@@ -845,12 +874,13 @@ where
+                         }
+                     };
+ 
+-                    state.scroll_animation = Some(ScrollAnimationState {
+-                        start_time: Instant::now(),
+-                        start: Offset::Absolute(offset.x),
+-                        end: Offset::Absolute(new_offset.x),
+-                        extra: Offset::Absolute(0.),
+-                    });
++                    state.scroll_animation =
++                        state.animations_enabled.then_some(ScrollAnimationState {
++                            start_time: Instant::now(),
++                            start: Offset::Absolute(offset.x),
++                            end: Offset::Absolute(new_offset.x),
++                            extra: Offset::Absolute(0.),
++                        });
+                     state.offset_x = Offset::Absolute(new_offset.x);
+                 }
+             }
+diff --git a/src/shell/focus/order.rs b/src/shell/focus/order.rs
+index 937fa311..533da167 100644
+--- a/src/shell/focus/order.rs
++++ b/src/shell/focus/order.rs
+@@ -15,7 +15,7 @@ use crate::{
+     shell::{
+         SeatExt, Shell, Workspace, WorkspaceDelta,
+         focus::target::KeyboardFocusTarget,
+-        layout::{floating::FloatingLayout, tiling::ANIMATION_DURATION},
++        layout::{floating::FloatingLayout, tiling::animation_duration},
+     },
+     utils::{
+         geometry::*,
+@@ -248,7 +248,7 @@ fn render_input_order_internal<R: 'static>(
+                         0.0,
+                         1.0,
+                         Instant::now().duration_since(*st).as_millis() as f32
+-                            / ANIMATION_DURATION.as_millis() as f32,
++                            / animation_duration().as_millis() as f32,
+                     ),
+                 ),
+                 WorkspaceDelta::Gesture {
+diff --git a/src/shell/grabs/moving.rs b/src/shell/grabs/moving.rs
+index f1fbfa8a..9580f2b1 100644
+--- a/src/shell/grabs/moving.rs
++++ b/src/shell/grabs/moving.rs
+@@ -66,7 +66,10 @@ use super::{GrabStartData, ReleaseMode};
+ 
+ pub type SeatMoveGrabState = Mutex<Option<MoveGrabState>>;
+ 
+-const RESCALE_ANIMATION_DURATION: f64 = 150.0;
++/// 拖动缩放动画分母（speed 越大 → 分母越大 → 动画越快）
++fn rescale_animation_duration() -> f64 {
++    150.0 * crate::animations::speed() as f64
++}
+ 
+ pub struct MoveGrabState {
+     window: CosmicMapped,
+@@ -97,7 +100,7 @@ impl MoveGrabState {
+         let scale = if self.previous == ManagedLayer::Tiling {
+             0.6 + ((1.0
+                 - (Instant::now().duration_since(self.start).as_millis() as f64
+-                    / RESCALE_ANIMATION_DURATION)
++                    / rescale_animation_duration())
+                     .min(1.0))
+                 * 0.4)
+         } else {
+diff --git a/src/shell/layout/floating/mod.rs b/src/shell/layout/floating/mod.rs
+index 95d7264d..2ae10d37 100644
+--- a/src/shell/layout/floating/mod.rs
++++ b/src/shell/layout/floating/mod.rs
+@@ -49,8 +49,14 @@ use crate::{
+ mod grabs;
+ pub use self::grabs::*;
+ 
+-pub const ANIMATION_DURATION: Duration = Duration::from_millis(200);
+-pub const MINIMIZE_ANIMATION_DURATION: Duration = Duration::from_millis(320);
++/// 窗口打开/移动动画时长（受 animations.speed 影响；cosmic-loongarch 补丁 0001）
++pub fn animation_duration() -> Duration {
++    crate::animations::scale(Duration::from_millis(200))
++}
++/// 最小化/恢复动画时长（受 animations.speed 影响）
++pub fn minimize_animation_duration() -> Duration {
++    crate::animations::scale(Duration::from_millis(320))
++}
+ 
+ #[derive(Debug, Default)]
+ pub struct FloatingLayout {
+@@ -58,6 +64,7 @@ pub struct FloatingLayout {
+     last_output_size: Size<i32, Local>,
+     spawn_order: Vec<CosmicMapped>,
+     animations: HashMap<CosmicMapped, Animation>,
++    animations_enabled: bool,
+     hovered_stack: Option<(CosmicMapped, Rectangle<i32, Local>)>,
+     dirty: AtomicBool,
+     pub theme: cosmic::Theme,
+@@ -97,17 +104,17 @@ impl Animation {
+             Animation::Minimize { start, .. } => {
+                 let percentage = Instant::now()
+                     .duration_since(*start)
+-                    .min(MINIMIZE_ANIMATION_DURATION)
++                    .min(minimize_animation_duration())
+                     .as_secs_f32()
+-                    / MINIMIZE_ANIMATION_DURATION.as_secs_f32();
++                    / minimize_animation_duration().as_secs_f32();
+                 1.0 - ((percentage - 0.5).max(0.0) * 2.0)
+             }
+             Animation::Unminimize { start, .. } => {
+                 let percentage = Instant::now()
+                     .duration_since(*start)
+-                    .min(MINIMIZE_ANIMATION_DURATION)
++                    .min(minimize_animation_duration())
+                     .as_secs_f32()
+-                    / MINIMIZE_ANIMATION_DURATION.as_secs_f32();
++                    / minimize_animation_duration().as_secs_f32();
+                 (percentage * 2.0).min(1.0)
+             }
+         }
+@@ -140,7 +147,7 @@ impl Animation {
+             }
+             | Animation::Unminimize {
+                 target_geometry, ..
+-            } => (MINIMIZE_ANIMATION_DURATION, *target_geometry),
++            } => (minimize_animation_duration(), *target_geometry),
+             Animation::Tiled { .. } => {
+                 let target_geometry = if let Some(target_rect) =
+                     tiled_state.map(|state| state.relative_geometry(output_geometry, gaps))
+@@ -149,7 +156,7 @@ impl Animation {
+                 } else {
+                     current_geometry
+                 };
+-                (ANIMATION_DURATION, target_geometry)
++                (animation_duration(), target_geometry)
+             }
+         };
+         let previous_rect = *self.previous_geometry();
+@@ -269,11 +276,13 @@ impl FloatingLayout {
+     pub fn new(
+         theme: cosmic::Theme,
+         appearance: AppearanceConfig,
++        animations_enabled: bool,
+         output: &Output,
+     ) -> FloatingLayout {
+         let mut layout = Self {
+             theme,
+             last_output_size: output.geometry().size.as_local(),
++            animations_enabled,
+             appearance,
+             ..Default::default()
+         };
+@@ -281,6 +290,10 @@ impl FloatingLayout {
+         layout
+     }
+ 
++    pub fn set_animations_enabled(&mut self, enabled: bool) {
++        self.animations_enabled = enabled;
++    }
++
+     pub fn set_output(&mut self, output: &Output) {
+         let old_output = self.space.outputs().next().unwrap().clone();
+         self.space.unmap_output(&old_output);
+@@ -371,7 +384,7 @@ impl FloatingLayout {
+ 
+         mapped.moved_since_mapped.store(true, Ordering::SeqCst);
+ 
+-        if animate {
++        if animate && self.animations_enabled {
+             if let Some(existing_anim) = self.animations.get_mut(&mapped) {
+                 match existing_anim {
+                     Animation::Unminimize {
+@@ -609,13 +622,15 @@ impl FloatingLayout {
+         mapped.configure();
+ 
+         if let Some(previous_geometry) = prev.or(already_mapped) {
+-            self.animations.insert(
+-                mapped.clone(),
+-                Animation::Tiled {
+-                    start: Instant::now(),
+-                    previous_geometry,
+-                },
+-            );
++            if self.animations_enabled {
++                self.animations.insert(
++                    mapped.clone(),
++                    Animation::Tiled {
++                        start: Instant::now(),
++                        previous_geometry,
++                    },
++                );
++            }
+         }
+         self.space.map_element(mapped, position.as_logical(), false);
+         self.space.refresh();
+@@ -652,14 +667,16 @@ impl FloatingLayout {
+         self.space.refresh();
+         let target_geometry = self.space.element_geometry(&mapped).unwrap().as_local();
+ 
+-        self.animations.insert(
+-            mapped,
+-            Animation::Unminimize {
+-                start: Instant::now(),
+-                previous_geometry: from,
+-                target_geometry,
+-            },
+-        );
++        if self.animations_enabled {
++            self.animations.insert(
++                mapped,
++                Animation::Unminimize {
++                    start: Instant::now(),
++                    previous_geometry: from,
++                    target_geometry,
++                },
++            );
++        }
+     }
+ 
+     pub fn unmap(
+@@ -670,7 +687,9 @@ impl FloatingLayout {
+         let mut mapped_geometry = self.space.element_geometry(window).map(RectExt::as_local)?;
+         let _ = self.animations.remove(window);
+ 
+-        if let Some(to) = to {
++        if self.animations_enabled
++            && let Some(to) = to
++        {
+             self.animations.insert(
+                 window.clone(),
+                 Animation::Minimize {
+@@ -1048,6 +1067,7 @@ impl FloatingLayout {
+                 (&output, mapped.bbox()),
+                 self.theme.clone(),
+                 self.appearance,
++                self.animations_enabled,
+             );
+             self.map_internal(
+                 mapped.clone(),
+@@ -1416,8 +1436,8 @@ impl FloatingLayout {
+         let was_empty = self.animations.is_empty();
+         self.animations.retain(|_, anim| {
+             let duration = match anim {
+-                Animation::Tiled { .. } => ANIMATION_DURATION,
+-                _ => MINIMIZE_ANIMATION_DURATION,
++                Animation::Tiled { .. } => animation_duration(),
++                _ => minimize_animation_duration(),
+             };
+             Instant::now().duration_since(*anim.start()) < duration
+         });
+diff --git a/src/shell/layout/tiling/mod.rs b/src/shell/layout/tiling/mod.rs
+index 20e11b71..4b37474d 100644
+--- a/src/shell/layout/tiling/mod.rs
++++ b/src/shell/layout/tiling/mod.rs
+@@ -79,8 +79,14 @@ mod grabs;
+ pub use self::blocker::*;
+ pub use self::grabs::*;
+ 
+-pub const ANIMATION_DURATION: Duration = Duration::from_millis(200);
+-pub const MINIMIZE_ANIMATION_DURATION: Duration = Duration::from_millis(320);
++/// 平铺窗口动画时长（受 animations.speed 影响）
++pub fn animation_duration() -> Duration {
++    crate::animations::scale(Duration::from_millis(200))
++}
++/// 平铺最小化/恢复动画时长（受 animations.speed 影响）
++pub fn minimize_animation_duration() -> Duration {
++    crate::animations::scale(Duration::from_millis(320))
++}
+ pub const MOUSE_ANIMATION_DELAY: Duration = Duration::from_millis(150);
+ pub const INITIAL_MOUSE_ANIMATION_DELAY: Duration = Duration::from_millis(500);
+ 
+@@ -115,17 +121,61 @@ impl TargetZone {
+ struct TreeQueue {
+     trees: VecDeque<(Tree<Data>, Duration, Option<TilingBlocker>)>,
+     animation_start: Option<Instant>,
++    animations_enabled: bool,
+ }
+ 
+ impl TreeQueue {
++    fn clear_minimize_rects(tree: &mut Tree<Data>) {
++        if let Some(root_id) = tree.root_node_id() {
++            for node in tree
++                .traverse_pre_order_ids(root_id)
++                .unwrap()
++                .collect::<Vec<_>>()
++                .into_iter()
++            {
++                if let Data::Mapped { minimize_rect, .. } = tree.get_mut(&node).unwrap().data_mut()
++                {
++                    minimize_rect.take();
++                }
++            }
++        }
++    }
++
++    fn apply_tree(&mut self, mut tree: Tree<Data>) {
++        Self::clear_minimize_rects(&mut tree);
++        self.trees.clear();
++        self.trees.push_back((tree, Duration::ZERO, None));
++        self.animation_start = None;
++    }
++
++    fn finish_current_transition(&mut self) {
++        let _ = self.animation_start.take();
++        let _ = self.trees.pop_front();
++        let front = self.trees.front_mut().unwrap();
++        Self::clear_minimize_rects(&mut front.0);
++        let _ = front.2.take();
++    }
++
+     pub fn push_tree(
+         &mut self,
+         tree: Tree<Data>,
+         duration: impl Into<Option<Duration>>,
+         blocker: Option<TilingBlocker>,
+     ) {
+-        self.trees
+-            .push_back((tree, duration.into().unwrap_or(Duration::ZERO), blocker))
++        if !self.animations_enabled && blocker.is_none() {
++            self.apply_tree(tree);
++            return;
++        }
++
++        self.trees.push_back((
++            tree,
++            if self.animations_enabled {
++                duration.into().unwrap_or(Duration::ZERO)
++            } else {
++                Duration::ZERO
++            },
++            blocker,
++        ))
+     }
+ }
+ 
+@@ -352,6 +402,7 @@ impl TilingLayout {
+     pub fn new(
+         theme: cosmic::Theme,
+         appearance: AppearanceConfig,
++        animations_enabled: bool,
+         output: &Output,
+     ) -> TilingLayout {
+         TilingLayout {
+@@ -362,6 +413,7 @@ impl TilingLayout {
+                     queue
+                 },
+                 animation_start: None,
++                animations_enabled,
+             },
+             output: output.clone(),
+             backdrop_id: Id::new(),
+@@ -372,6 +424,14 @@ impl TilingLayout {
+         }
+     }
+ 
++    fn animations_enabled(&self) -> bool {
++        self.queue.animations_enabled
++    }
++
++    pub fn set_animations_enabled(&mut self, enabled: bool) {
++        self.queue.animations_enabled = enabled;
++    }
++
+     pub fn set_output(&mut self, output: &Output) {
+         let gaps = self.gaps();
+         let mut tree = self.queue.trees.back().unwrap().0.copy_clone();
+@@ -418,9 +478,9 @@ impl TilingLayout {
+             .and_then(|focus_stack| TilingLayout::last_active_window(&tree, focus_stack))
+             .map(|(node_id, _)| node_id);
+         let duration = if minimize_rect.is_some() {
+-            MINIMIZE_ANIMATION_DURATION
++            minimize_animation_duration()
+         } else {
+-            ANIMATION_DURATION
++            animation_duration()
+         };
+ 
+         TilingLayout::map_to_tree(
+@@ -498,7 +558,7 @@ impl TilingLayout {
+ 
+                 let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+                 self.queue
+-                    .push_tree(tree, MINIMIZE_ANIMATION_DURATION, blocker);
++                    .push_tree(tree, minimize_animation_duration(), blocker);
+                 return;
+             }
+ 
+@@ -536,7 +596,7 @@ impl TilingLayout {
+ 
+                 let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+                 self.queue
+-                    .push_tree(tree, MINIMIZE_ANIMATION_DURATION, blocker);
++                    .push_tree(tree, minimize_animation_duration(), blocker);
+                 return;
+             }
+         }
+@@ -638,7 +698,7 @@ impl TilingLayout {
+             new.output_enter(&self.output, new.bbox());
+ 
+             let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-            self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++            self.queue.push_tree(tree, animation_duration(), blocker);
+         }
+     }
+ 
+@@ -816,13 +876,13 @@ impl TilingLayout {
+                 TilingLayout::unmap_internal(&mut this_tree, &desc.node);
+                 let blocker =
+                     TilingLayout::update_positions(&this.output, &mut this_tree, this_gaps);
+-                this.queue.push_tree(this_tree, ANIMATION_DURATION, blocker);
++                this.queue.push_tree(this_tree, animation_duration(), blocker);
+ 
+                 let blocker =
+                     TilingLayout::update_positions(&other.output, &mut other_tree, other_gaps);
+                 other
+                     .queue
+-                    .push_tree(other_tree, ANIMATION_DURATION, blocker);
++                    .push_tree(other_tree, animation_duration(), blocker);
+ 
+                 other.node_desc_to_focus(&NodeDesc {
+                     handle: *other_handle,
+@@ -1256,7 +1316,7 @@ impl TilingLayout {
+ 
+         let this_gaps = this.gaps();
+         let blocker = TilingLayout::update_positions(&this.output, &mut this_tree, this_gaps);
+-        this.queue.push_tree(this_tree, ANIMATION_DURATION, blocker);
++        this.queue.push_tree(this_tree, animation_duration(), blocker);
+ 
+         let has_other_tree = other_tree.is_some();
+         if let Some(mut other_tree) = other_tree {
+@@ -1267,7 +1327,7 @@ impl TilingLayout {
+                 (&mut this.queue, this_gaps)
+             };
+             let blocker = TilingLayout::update_positions(&other_output, &mut other_tree, gaps);
+-            other_queue.push_tree(other_tree, ANIMATION_DURATION, blocker);
++            other_queue.push_tree(other_tree, animation_duration(), blocker);
+         }
+ 
+         match (&this_desc.stack_window, &other_desc.stack_window) {
+@@ -1431,9 +1491,9 @@ impl TilingLayout {
+             TilingLayout::unmap_internal(&mut tree, &node_id);
+ 
+             let duration = if minimizing {
+-                MINIMIZE_ANIMATION_DURATION
++                minimize_animation_duration()
+             } else {
+-                ANIMATION_DURATION
++                animation_duration()
+             };
+             let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+             self.queue.push_tree(tree, duration, blocker);
+@@ -1552,7 +1612,7 @@ impl TilingLayout {
+                     *mapped.tiling_node_id.lock().unwrap() = Some(new_id);
+ 
+                     let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-                    self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++                    self.queue.push_tree(tree, animation_duration(), blocker);
+                     return MoveResult::ShiftFocus(mapped.into());
+                 }
+                 StackMoveResult::Default => {} // continue normally
+@@ -1628,7 +1688,7 @@ impl TilingLayout {
+                     .remove_window(og_idx);
+ 
+                 let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-                self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++                self.queue.push_tree(tree, animation_duration(), blocker);
+                 return MoveResult::Done;
+             }
+ 
+@@ -1654,7 +1714,7 @@ impl TilingLayout {
+                     .remove_window(og_idx);
+ 
+                 let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-                self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++                self.queue.push_tree(tree, animation_duration(), blocker);
+                 return MoveResult::Done;
+             }
+ 
+@@ -1810,7 +1870,7 @@ impl TilingLayout {
+                 };
+ 
+                 let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-                self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++                self.queue.push_tree(tree, animation_duration(), blocker);
+                 return result;
+             }
+ 
+@@ -2125,7 +2185,7 @@ impl TilingLayout {
+             *orientation = new_orientation;
+ 
+             let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-            self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++            self.queue.push_tree(tree, animation_duration(), blocker);
+         }
+     }
+ 
+@@ -2149,6 +2209,7 @@ impl TilingLayout {
+                         (&self.output, mapped.bbox()),
+                         self.theme.clone(),
+                         self.appearance,
++                        self.animations_enabled(),
+                     );
+                     focus_stack.append(mapped.clone());
+                     KeyboardFocusTarget::Element(mapped.clone())
+@@ -2245,7 +2306,7 @@ impl TilingLayout {
+         };
+ 
+         let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-        self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++        self.queue.push_tree(tree, animation_duration(), blocker);
+ 
+         Some(result)
+     }
+@@ -2291,6 +2352,7 @@ impl TilingLayout {
+                         handle,
+                         self.theme.clone(),
+                         self.appearance,
++                        self.animations_enabled(),
+                     );
+ 
+                     for child in tree
+@@ -2322,7 +2384,7 @@ impl TilingLayout {
+                     };
+ 
+                     let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-                    self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++                    self.queue.push_tree(tree, animation_duration(), blocker);
+ 
+                     return Some(KeyboardFocusTarget::Element(mapped));
+                 }
+@@ -2337,7 +2399,7 @@ impl TilingLayout {
+ 
+         let mut tree = self.queue.trees.back().unwrap().0.copy_clone();
+         let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-        self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++        self.queue.push_tree(tree, animation_duration(), blocker);
+     }
+ 
+     #[profiling::function]
+@@ -2362,7 +2424,7 @@ impl TilingLayout {
+ 
+     pub fn update_animation_state(&mut self) -> HashMap<ClientId, Client> {
+         let mut clients = HashMap::new();
+-        let mut ready_trees = 0;
++        let mut ready_trees: usize = 0;
+         for (_, _, blocker) in self.queue.trees.iter().skip(1) {
+             if let Some(blocker) = blocker.as_ref() {
+                 if blocker.is_processed() {
+@@ -2388,26 +2450,8 @@ impl TilingLayout {
+                     .expect("Animation going without second tree?")
+                     .1
+             {
+-                let _ = self.queue.animation_start.take();
+-                let _ = self.queue.trees.pop_front();
+-                ready_trees -= 1;
+-                let front = self.queue.trees.front_mut().unwrap();
+-                if let Some(root_id) = front.0.root_node_id() {
+-                    for node in front
+-                        .0
+-                        .traverse_pre_order_ids(root_id)
+-                        .unwrap()
+-                        .collect::<Vec<_>>()
+-                        .into_iter()
+-                    {
+-                        if let Data::Mapped { minimize_rect, .. } =
+-                            front.0.get_mut(&node).unwrap().data_mut()
+-                        {
+-                            minimize_rect.take();
+-                        }
+-                    }
+-                }
+-                let _ = front.2.take();
++                self.queue.finish_current_transition();
++                ready_trees = ready_trees.saturating_sub(1);
+             } else {
+                 return clients;
+             }
+@@ -2434,7 +2478,11 @@ impl TilingLayout {
+             *duration = other_duration
+                 .map(|other| other.max(*duration))
+                 .unwrap_or(*duration);
+-            self.queue.animation_start = Some(Instant::now());
++            if duration.is_zero() {
++                self.queue.finish_current_transition();
++            } else {
++                self.queue.animation_start = Some(Instant::now());
++            }
+         }
+ 
+         clients
+@@ -2658,7 +2706,7 @@ impl TilingLayout {
+             if let Some(mut new_tree) = new_tree {
+                 let blocker =
+                     TilingLayout::update_positions(&self.output, &mut new_tree, self.gaps());
+-                self.queue.push_tree(new_tree, ANIMATION_DURATION, blocker);
++                self.queue.push_tree(new_tree, animation_duration(), blocker);
+             }
+         }
+     }
+@@ -2774,6 +2822,7 @@ impl TilingLayout {
+                             (&self.output, mapped.bbox()),
+                             self.theme.clone(),
+                             self.appearance,
++                            self.animations_enabled(),
+                         );
+                         let Some(stack) = mapped.stack_ref() else {
+                             unreachable!()
+@@ -2817,7 +2866,7 @@ impl TilingLayout {
+         }
+ 
+         let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-        self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++        self.queue.push_tree(tree, animation_duration(), blocker);
+ 
+         let location = self.element_geometry(&mapped).unwrap().loc;
+         (mapped, location)
+@@ -3408,7 +3457,7 @@ impl TilingLayout {
+                 )
+                 .unwrap();
+                 let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
+-                self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
++                self.queue.push_tree(tree, animation_duration(), blocker);
+             }
+             return;
+         };
+@@ -3747,9 +3796,9 @@ impl TilingLayout {
+                                 let duration = if target_zone.is_window_zone()
+                                     && !old_target_zone.is_window_zone()
+                                 {
+-                                    ANIMATION_DURATION * 2
++                                    animation_duration() * 2
+                                 } else {
+-                                    ANIMATION_DURATION
++                                    animation_duration()
+                                 };
+ 
+                                 let mut tree = tree.copy_clone();
+@@ -3979,7 +4028,7 @@ impl TilingLayout {
+         TilingLayout::merge_trees(src, &mut dst, orientation);
+ 
+         let blocker = TilingLayout::update_positions(&self.output, &mut dst, gaps);
+-        self.queue.push_tree(dst, ANIMATION_DURATION, blocker);
++        self.queue.push_tree(dst, animation_duration(), blocker);
+     }
+ 
+     fn merge_trees(src: Tree<Data>, dst: &mut Tree<Data>, orientation: Orientation) {
+@@ -4223,7 +4272,9 @@ impl TilingLayout {
+             .is_some()
+             .then(|| &self.queue.trees.front().unwrap().0);
+ 
+-        let percentage = if let Some(animation_start) = self.queue.animation_start {
++        let percentage = if let Some(animation_start) =
++            self.queue.animation_start.filter(|_| !duration.is_zero())
++        {
+             let percentage = Instant::now().duration_since(animation_start).as_millis() as f32
+                 / duration.as_millis() as f32;
+             ease(EaseInOutCubic, 0.0, 1.0, percentage)
+diff --git a/src/shell/mod.rs b/src/shell/mod.rs
+index 10b40b59..b5198fe2 100644
+--- a/src/shell/mod.rs
++++ b/src/shell/mod.rs
+@@ -124,13 +124,34 @@ use self::{
+     },
+ };
+ 
+-const ANIMATION_DURATION: Duration = Duration::from_millis(200);
++fn animation_duration() -> Duration {
++    crate::animations::scale(Duration::from_millis(200))
++}
+ const GESTURE_MAX_LENGTH: f64 = 150.0;
+ const GESTURE_POSITION_THRESHOLD: f64 = 0.5;
+ const GESTURE_VELOCITY_THRESHOLD: f64 = 0.02;
+ const MOVE_GRAB_Y_OFFSET: f64 = 16.;
+ const ACTIVATION_TOKEN_EXPIRE_TIME: Duration = Duration::from_secs(5);
+ 
++pub(crate) fn overview_fade_alpha(mode: &OverviewMode) -> f32 {
++    match mode {
++        OverviewMode::Started(_, start) => {
++            let percentage = (Instant::now().duration_since(*start).as_secs_f32()
++                / animation_duration().as_secs_f32())
++            .clamp(0.0, 1.0);
++            (1.0 - percentage) * 0.4 + 0.6
++        }
++        OverviewMode::Active(_) => 0.6,
++        OverviewMode::Ended(_, end) => {
++            let percentage = (Instant::now().duration_since(*end).as_secs_f32()
++                / animation_duration().as_secs_f32())
++            .clamp(0.0, 1.0);
++            percentage * 0.4 + 0.6
++        }
++        OverviewMode::None => 1.0,
++    }
++}
++
+ #[derive(Debug, Clone)]
+ pub enum Trigger {
+     KeyboardSwap(shortcuts::Binding, NodeDesc),
+@@ -152,14 +173,16 @@ impl OverviewMode {
+     pub fn alpha(&self) -> Option<f32> {
+         match self {
+             OverviewMode::Started(_, start) => {
+-                let percentage = Instant::now().duration_since(*start).as_millis() as f32
+-                    / ANIMATION_DURATION.as_millis() as f32;
++                let percentage = (Instant::now().duration_since(*start).as_secs_f32()
++                    / animation_duration().as_secs_f32())
++                .clamp(0.0, 1.0);
+                 Some(ease(EaseInOutCubic, 0.0, 1.0, percentage))
+             }
+             OverviewMode::Active(_) => Some(1.0),
+             OverviewMode::Ended(_, end) => {
+-                let percentage = Instant::now().duration_since(*end).as_millis() as f32
+-                    / ANIMATION_DURATION.as_millis() as f32;
++                let percentage = (Instant::now().duration_since(*end).as_secs_f32()
++                    / animation_duration().as_secs_f32())
++                .clamp(0.0, 1.0);
+                 if percentage < 1.0 {
+                     Some(ease(EaseInOutCubic, 1.0, 0.0, percentage))
+                 } else {
+@@ -205,14 +228,16 @@ impl ResizeMode {
+     pub fn alpha(&self) -> Option<f32> {
+         match self {
+             ResizeMode::Started(_, start, _) => {
+-                let percentage = Instant::now().duration_since(*start).as_millis() as f32
+-                    / ANIMATION_DURATION.as_millis() as f32;
++                let percentage = (Instant::now().duration_since(*start).as_secs_f32()
++                    / animation_duration().as_secs_f32())
++                .clamp(0.0, 1.0);
+                 Some(ease(EaseInOutCubic, 0.0, 1.0, percentage))
+             }
+             ResizeMode::Active(_, _) => Some(1.0),
+             ResizeMode::Ended(end, _) => {
+-                let percentage = Instant::now().duration_since(*end).as_millis() as f32
+-                    / ANIMATION_DURATION.as_millis() as f32;
++                let percentage = (Instant::now().duration_since(*end).as_secs_f32()
++                    / animation_duration().as_secs_f32())
++                .clamp(0.0, 1.0);
+                 if percentage < 1.0 {
+                     Some(ease(EaseInOutCubic, 1.0, 0.0, percentage))
+                 } else {
+@@ -290,6 +315,7 @@ pub struct Shell {
+ 
+     theme: cosmic::Theme,
+     pub active_hint: bool,
++    animations_enabled: bool,
+     overview_mode: OverviewMode,
+     swap_indicator: Option<SwapIndicator>,
+     resize_mode: ResizeMode,
+@@ -372,6 +398,7 @@ pub struct WorkspaceSet {
+     pub active: usize,
+     pub group: WorkspaceGroupHandle,
+     tiling_enabled: bool,
++    animations_enabled: bool,
+     output: Output,
+     theme: cosmic::Theme,
+     appearance: AppearanceConfig,
+@@ -386,6 +413,7 @@ fn create_workspace(
+     group_handle: &WorkspaceGroupHandle,
+     active: bool,
+     tiling: bool,
++    animations_enabled: bool,
+     theme: cosmic::Theme,
+     appearance: AppearanceConfig,
+ ) -> Workspace {
+@@ -415,6 +443,7 @@ fn create_workspace(
+         workspace_handle,
+         output.clone(),
+         tiling,
++        animations_enabled,
+         theme.clone(),
+         appearance,
+     )
+@@ -426,6 +455,7 @@ fn create_workspace_from_pinned(
+     output: &Output,
+     group_handle: &WorkspaceGroupHandle,
+     active: bool,
++    animations_enabled: bool,
+     theme: cosmic::Theme,
+     appearance: AppearanceConfig,
+ ) -> Workspace {
+@@ -460,6 +490,7 @@ fn create_workspace_from_pinned(
+         pinned,
+         workspace_handle,
+         output.clone(),
++        animations_enabled,
+         theme.clone(),
+         appearance,
+     )
+@@ -496,17 +527,20 @@ impl WorkspaceSet {
+         state: &mut WorkspaceUpdateGuard<'_, State>,
+         output: &Output,
+         tiling_enabled: bool,
++        animations_enabled: bool,
+         theme: &cosmic::Theme,
+         appearance: AppearanceConfig,
+     ) -> WorkspaceSet {
+         let group_handle = state.create_workspace_group();
+-        let sticky_layer = FloatingLayout::new(theme.clone(), appearance, output);
++        let sticky_layer =
++            FloatingLayout::new(theme.clone(), appearance, animations_enabled, output);
+ 
+         WorkspaceSet {
+             previously_active: None,
+             active: 0,
+             group: group_handle,
+             tiling_enabled,
++            animations_enabled,
+             theme: theme.clone(),
+             sticky_layer,
+             minimized_windows: Vec::new(),
+@@ -527,6 +561,7 @@ impl WorkspaceSet {
+         idx: usize,
+         workspace_delta: WorkspaceDelta,
+         state: &mut WorkspaceUpdateGuard<'_, State>,
++        animations_enabled: bool,
+     ) -> Result<bool, InvalidWorkspaceIndex> {
+         if idx >= self.workspaces.len() {
+             return Err(InvalidWorkspaceIndex);
+@@ -534,9 +569,10 @@ impl WorkspaceSet {
+ 
+         // Animate if workspaces overview isn't open
+         let layer_map = layer_map_for_output(&self.output);
+-        let animate = !layer_map
+-            .layers()
+-            .any(|l| l.namespace() == WORKSPACE_OVERVIEW_NAMESPACE);
++        let animate = animations_enabled
++            && !layer_map
++                .layers()
++                .any(|l| l.namespace() == WORKSPACE_OVERVIEW_NAMESPACE);
+ 
+         if self.active != idx {
+             let old_active = self.active;
+@@ -571,9 +607,10 @@ impl WorkspaceSet {
+         &mut self,
+         workspace_delta: WorkspaceDelta,
+         state: &mut WorkspaceUpdateGuard<'_, State>,
++        animations_enabled: bool,
+     ) -> Result<bool, InvalidWorkspaceIndex> {
+         if let Some((idx, _)) = self.previously_active {
+-            return self.activate(idx, workspace_delta, state);
++            return self.activate(idx, workspace_delta, state, animations_enabled);
+         }
+         Err(InvalidWorkspaceIndex)
+     }
+@@ -608,7 +645,7 @@ impl WorkspaceSet {
+             match start {
+                 WorkspaceDelta::Shortcut(st) => {
+                     if Instant::now().duration_since(st).as_millis() as f32
+-                        >= ANIMATION_DURATION.as_millis() as f32
++                        >= animation_duration().as_millis() as f32
+                     {
+                         self.previously_active = None;
+                     }
+@@ -636,6 +673,7 @@ impl WorkspaceSet {
+             &self.group,
+             false,
+             self.tiling_enabled,
++            self.animations_enabled,
+             self.theme.clone(),
+             self.appearance,
+         );
+@@ -843,6 +881,7 @@ pub struct Workspaces {
+     mode: WorkspaceMode,
+     autotile: bool,
+     autotile_behavior: TileBehavior,
++    animations_enabled: bool,
+     theme: cosmic::Theme,
+     appearance: AppearanceConfig,
+     // Persisted workspace to add on first `output_add`
+@@ -858,6 +897,7 @@ impl Workspaces {
+             mode: config.cosmic_conf.workspaces.workspace_mode,
+             autotile: config.cosmic_conf.autotile,
+             autotile_behavior: config.cosmic_conf.autotile_behavior,
++            animations_enabled: config.cosmic_conf.animations.enabled,
+             theme,
+             appearance: config.cosmic_conf.appearance_settings,
+             persisted_workspaces: config.cosmic_conf.pinned_workspaces.clone(),
+@@ -885,6 +925,7 @@ impl Workspaces {
+                     workspace_state,
+                     output,
+                     self.autotile,
++                    self.animations_enabled,
+                     &self.theme,
+                     self.appearance,
+                 )
+@@ -899,6 +940,7 @@ impl Workspaces {
+                 output,
+                 &set.group,
+                 false,
++                self.animations_enabled,
+                 self.theme.clone(),
+                 self.appearance,
+             );
+@@ -1179,11 +1221,16 @@ impl Workspaces {
+         self.mode = config.cosmic_conf.workspaces.workspace_mode;
+         self.layout = config.cosmic_conf.workspaces.workspace_layout;
+         self.appearance = config.cosmic_conf.appearance_settings;
++        self.animations_enabled = config.cosmic_conf.animations.enabled;
+ 
+         for set in self.sets.values_mut() {
+             set.appearance = self.appearance;
++            set.animations_enabled = self.animations_enabled;
+             set.sticky_layer.appearance = self.appearance;
++            set.sticky_layer
++                .set_animations_enabled(self.animations_enabled);
+             for workspace in set.workspaces.iter_mut() {
++                workspace.set_animations_enabled(self.animations_enabled);
+                 workspace.floating_layer.appearance = self.appearance;
+                 workspace.tiling_layer.appearance = self.appearance;
+             }
+@@ -1233,6 +1280,7 @@ impl Workspaces {
+                                     &set.group,
+                                     false,
+                                     config.cosmic_conf.autotile,
++                                    self.animations_enabled,
+                                     self.theme.clone(),
+                                     self.appearance,
+                                 ),
+@@ -1561,6 +1609,7 @@ impl Common {
+                     1.0,
+                     state.increment,
+                     state.movement,
++                    shell.animations_enabled,
+                     self.event_loop_handle.clone(),
+                     shell.theme.clone(),
+                 ))
+@@ -1589,6 +1638,7 @@ impl Common {
+         let mut shell = self.shell.write();
+         let shell_ref = &mut *shell;
+         shell_ref.active_hint = self.config.cosmic_conf.active_hint;
++        shell_ref.animations_enabled = self.config.cosmic_conf.animations.enabled;
+         shell_ref.appearance_conf = self.config.cosmic_conf.appearance_settings;
+         if let Some(zoom_state) = shell_ref.zoom_state.as_mut() {
+             zoom_state.increment = self.config.cosmic_conf.accessibility_zoom.increment;
+@@ -1598,6 +1648,7 @@ impl Common {
+             for output in shell_ref.workspaces.sets.keys() {
+                 let output_state = output.user_data().get::<Mutex<OutputZoomState>>().unwrap();
+                 let mut output_state_ref = output_state.lock().unwrap();
++                output_state_ref.set_animations_enabled(shell_ref.animations_enabled);
+                 let level = output_state_ref.level;
+                 output_state_ref.update(level, false, zoom_state.movement, zoom_state.increment);
+             }
+@@ -1612,6 +1663,7 @@ impl Common {
+ 
+         for mapped in shell_ref.mapped() {
+             mapped.update_appearance_conf(&self.config.cosmic_conf.appearance_settings);
++            mapped.update_animations_enabled(shell_ref.animations_enabled);
+         }
+     }
+ 
+@@ -1744,6 +1796,7 @@ impl Shell {
+ 
+             theme,
+             active_hint: config.cosmic_conf.active_hint,
++            animations_enabled: config.cosmic_conf.animations.enabled,
+             overview_mode: OverviewMode::None,
+             swap_indicator: None,
+             resize_mode: ResizeMode::None,
+@@ -1774,7 +1827,12 @@ impl Shell {
+                     ) {
+                         set.workspaces[set.active].tiling_layer.cleanup_drag();
+                     }
+-                    set.activate(idx, workspace_delta, workspace_state)?;
++                    set.activate(
++                        idx,
++                        workspace_delta,
++                        workspace_state,
++                        self.animations_enabled,
++                    )?;
+ 
+                     let output_geo = output.geometry();
+                     Ok(
+@@ -1787,7 +1845,12 @@ impl Shell {
+             }
+             WorkspaceMode::Global => {
+                 for set in self.workspaces.sets.values_mut() {
+-                    set.activate(idx, workspace_delta, workspace_state)?;
++                    set.activate(
++                        idx,
++                        workspace_delta,
++                        workspace_state,
++                        self.animations_enabled,
++                    )?;
+                 }
+                 let output_geo = output.geometry();
+                 Ok(output_geo.loc + Point::from((output_geo.size.w / 2, output_geo.size.h / 2)))
+@@ -1795,6 +1858,10 @@ impl Shell {
+         }
+     }
+ 
++    pub fn animations_enabled(&self) -> bool {
++        self.animations_enabled
++    }
++
+     pub fn update_workspace_delta(&mut self, output: &Output, delta: f64, forward: bool) {
+         match &mut self.workspaces.mode {
+             WorkspaceMode::OutputBound => {
+@@ -1845,6 +1912,7 @@ impl Shell {
+                                     forward,
+                                 ),
+                                 workspace_state,
++                                self.animations_enabled,
+                             )?;
+                         } else {
+                             set.activate_previous(
+@@ -1854,6 +1922,7 @@ impl Shell {
+                                     !forward,
+                                 ),
+                                 workspace_state,
++                                self.animations_enabled,
+                             )?;
+                         }
+                     }
+@@ -1889,6 +1958,7 @@ impl Shell {
+                                     forward,
+                                 ),
+                                 workspace_state,
++                                self.animations_enabled,
+                             )?;
+                         } else {
+                             set.activate_previous(
+@@ -1898,6 +1968,7 @@ impl Shell {
+                                     !forward,
+                                 ),
+                                 workspace_state,
++                                self.animations_enabled,
+                             )?;
+                         }
+                     }
+@@ -2371,7 +2442,11 @@ impl Shell {
+                 if matches!(trigger, Trigger::KeyboardSwap(_, _)) {
+                     self.swap_indicator = Some(SwapIndicator::new(evlh, self.theme.clone()));
+                 }
+-                self.overview_mode = OverviewMode::Started(trigger, Instant::now());
++                self.overview_mode = if self.animations_enabled {
++                    OverviewMode::Started(trigger, Instant::now())
++                } else {
++                    OverviewMode::Active(trigger)
++                };
+             }
+         } else if matches!(
+             self.overview_mode,
+@@ -2380,20 +2455,25 @@ impl Shell {
+             let (reverse_duration, trigger) =
+                 if let OverviewMode::Started(trigger, start) = self.overview_mode.clone() {
+                     (
+-                        ANIMATION_DURATION
+-                            - Instant::now().duration_since(start).min(ANIMATION_DURATION),
++                        animation_duration()
++                            - Instant::now().duration_since(start).min(animation_duration()),
+                         Some(trigger),
+                     )
+                 } else {
+                     (Duration::ZERO, self.overview_mode.active_trigger().cloned())
+                 };
+-            self.overview_mode = OverviewMode::Ended(trigger, Instant::now() - reverse_duration);
++            self.overview_mode = if self.animations_enabled {
++                OverviewMode::Ended(trigger, Instant::now() - reverse_duration)
++            } else {
++                self.swap_indicator = None;
++                OverviewMode::None
++            };
+         }
+     }
+ 
+     pub fn overview_mode(&self) -> (OverviewMode, Option<SwapIndicator>) {
+         if let OverviewMode::Started(trigger, timestamp) = &self.overview_mode
+-            && Instant::now().duration_since(*timestamp) > ANIMATION_DURATION
++            && Instant::now().duration_since(*timestamp) > animation_duration()
+         {
+             return (
+                 OverviewMode::Active(trigger.clone()),
+@@ -2401,7 +2481,7 @@ impl Shell {
+             );
+         }
+         if let OverviewMode::Ended(_, timestamp) = &self.overview_mode
+-            && Instant::now().duration_since(*timestamp) > ANIMATION_DURATION
++            && Instant::now().duration_since(*timestamp) > animation_duration()
+         {
+             return (OverviewMode::None, None);
+         }
+@@ -2420,7 +2500,11 @@ impl Shell {
+                 *old_pattern = pattern;
+                 *old_direction = direction;
+             } else {
+-                self.resize_mode = ResizeMode::Started(pattern, Instant::now(), direction);
++                self.resize_mode = if self.animations_enabled {
++                    ResizeMode::Started(pattern, Instant::now(), direction)
++                } else {
++                    ResizeMode::Active(pattern, direction)
++                };
+             }
+             self.resize_indicator = Some(ResizeIndicator::new(
+                 direction,
+@@ -2429,16 +2513,21 @@ impl Shell {
+                 self.theme.clone(),
+             ));
+         } else if let Some(direction) = self.resize_mode.active_direction() {
+-            self.resize_mode = ResizeMode::Ended(Instant::now(), direction);
+             if let Some((_, direction, edge, _, _, _)) = self.resize_state.as_ref() {
+                 self.finish_resize(*direction, *edge);
+             }
++            self.resize_mode = if self.animations_enabled {
++                ResizeMode::Ended(Instant::now(), direction)
++            } else {
++                self.resize_indicator = None;
++                ResizeMode::None
++            };
+         }
+     }
+ 
+     pub fn resize_mode(&self) -> (ResizeMode, Option<ResizeIndicator>) {
+         if let ResizeMode::Started(binding, timestamp, direction) = &self.resize_mode
+-            && Instant::now().duration_since(*timestamp) > ANIMATION_DURATION
++            && Instant::now().duration_since(*timestamp) > animation_duration()
+         {
+             return (
+                 ResizeMode::Active(binding.clone(), *direction),
+@@ -2446,7 +2535,7 @@ impl Shell {
+             );
+         }
+         if let ResizeMode::Ended(timestamp, _) = self.resize_mode
+-            && Instant::now().duration_since(timestamp) > ANIMATION_DURATION
++            && Instant::now().duration_since(timestamp) > animation_duration()
+         {
+             return (ResizeMode::None, None);
+         }
+@@ -2501,6 +2590,7 @@ impl Shell {
+                         1.0,
+                         zoom_config.increment,
+                         zoom_config.view_moves,
++                        self.animations_enabled,
+                         loop_handle.clone(),
+                         self.theme.clone(),
+                     ))
+@@ -2590,12 +2680,12 @@ impl Shell {
+     ) {
+         match &self.overview_mode {
+             OverviewMode::Started(trigger, timestamp)
+-                if Instant::now().duration_since(*timestamp) > ANIMATION_DURATION =>
++                if Instant::now().duration_since(*timestamp) > animation_duration() =>
+             {
+                 self.overview_mode = OverviewMode::Active(trigger.clone());
+             }
+             OverviewMode::Ended(_, timestamp)
+-                if Instant::now().duration_since(*timestamp) > ANIMATION_DURATION =>
++                if Instant::now().duration_since(*timestamp) > animation_duration() =>
+             {
+                 self.overview_mode = OverviewMode::None;
+                 self.swap_indicator = None;
+@@ -2605,12 +2695,12 @@ impl Shell {
+ 
+         match &self.resize_mode {
+             ResizeMode::Started(binding, timestamp, direction)
+-                if Instant::now().duration_since(*timestamp) > ANIMATION_DURATION =>
++                if Instant::now().duration_since(*timestamp) > animation_duration() =>
+             {
+                 self.resize_mode = ResizeMode::Active(binding.clone(), *direction);
+             }
+             ResizeMode::Ended(timestamp, _)
+-                if Instant::now().duration_since(*timestamp) > ANIMATION_DURATION =>
++                if Instant::now().duration_since(*timestamp) > animation_duration() =>
+             {
+                 self.resize_mode = ResizeMode::None;
+                 self.resize_indicator = None;
+@@ -2700,6 +2790,7 @@ impl Shell {
+                 loop_handle.clone(),
+                 self.theme.clone(),
+                 self.appearance_conf,
++                crate::animations::enabled(), // cosmic-loongarch 补丁 0001
+             ))
+         } else {
+             CosmicMapped::from(CosmicWindow::new(
+diff --git a/src/shell/workspace.rs b/src/shell/workspace.rs
+index fd63dcb1..3048be39 100644
+--- a/src/shell/workspace.rs
++++ b/src/shell/workspace.rs
+@@ -5,11 +5,12 @@ use crate::wayland::handlers::xdg_activation::ActivationContext;
+ use crate::{
+     backend::render::{BackdropShader, element::AsGlowRenderer},
+     shell::{
+-        ANIMATION_DURATION, OverviewMode, SeatMoveGrabState,
++        OverviewMode, SeatMoveGrabState,
+         layout::{
+             floating::{FloatingLayout, TiledCorners},
+             tiling::TilingLayout,
+         },
++        overview_fade_alpha,
+     },
+     state::State,
+     utils::{prelude::*, tween::EaseRectangle},
+@@ -72,7 +73,10 @@ use super::{
+     layout::tiling::{Data, NodeDesc},
+ };
+ 
+-const FULLSCREEN_ANIMATION_DURATION: Duration = Duration::from_millis(200);
++/// 全屏进入/退出动画时长（受 animations.speed 影响）
++fn fullscreen_animation_duration() -> Duration {
++    crate::animations::scale(Duration::from_millis(200))
++}
+ 
+ // For stable workspace id, generate random 24-bit integer, as a hex string
+ // Must be compared with existing workspaces work uniqueness.
+@@ -105,6 +109,7 @@ pub struct Workspace {
+     pub output: Output,
+     pub tiling_layer: TilingLayout,
+     pub floating_layer: FloatingLayout,
++    pub animations_enabled: bool,
+     pub minimized_windows: Vec<MinimizedWindow>,
+     pub tiling_enabled: bool,
+     pub fullscreen_surfaces: Vec<FullscreenSurface>,
+@@ -385,17 +390,20 @@ impl Workspace {
+         handle: WorkspaceHandle,
+         output: Output,
+         tiling_enabled: bool,
++        animations_enabled: bool,
+         theme: cosmic::Theme,
+         appearance: AppearanceConfig,
+     ) -> Workspace {
+-        let tiling_layer = TilingLayout::new(theme.clone(), appearance, &output);
+-        let floating_layer = FloatingLayout::new(theme, appearance, &output);
++        let tiling_layer =
++            TilingLayout::new(theme.clone(), appearance, animations_enabled, &output);
++        let floating_layer = FloatingLayout::new(theme, appearance, animations_enabled, &output);
+         let output_match = output_match_for_output(&output);
+ 
+         Workspace {
+             output,
+             tiling_layer,
+             floating_layer,
++            animations_enabled,
+             tiling_enabled,
+             minimized_windows: Vec::new(),
+             fullscreen_surfaces: Vec::new(),
+@@ -419,17 +427,20 @@ impl Workspace {
+         pinned: &PinnedWorkspace,
+         handle: WorkspaceHandle,
+         output: Output,
++        animations_enabled: bool,
+         theme: cosmic::Theme,
+         appearance: AppearanceConfig,
+     ) -> Self {
+-        let tiling_layer = TilingLayout::new(theme.clone(), appearance, &output);
+-        let floating_layer = FloatingLayout::new(theme, appearance, &output);
++        let tiling_layer =
++            TilingLayout::new(theme.clone(), appearance, animations_enabled, &output);
++        let floating_layer = FloatingLayout::new(theme, appearance, animations_enabled, &output);
+         let output_match = output_match_for_output(&output);
+ 
+         Workspace {
+             output,
+             tiling_layer,
+             floating_layer,
++            animations_enabled,
+             tiling_enabled: pinned.tiling_enabled,
+             minimized_windows: Vec::new(),
+             fullscreen_surfaces: Vec::new(),
+@@ -470,6 +481,51 @@ impl Workspace {
+         }
+     }
+ 
++    fn fullscreen_transition(
++        &self,
++        fullscreen: &FullscreenSurface,
++        fullscreen_geo: Rectangle<i32, Local>,
++    ) -> (Rectangle<i32, Local>, f32) {
++        let previous_geo = fullscreen
++            .previous_geometry
++            .as_ref()
++            .unwrap_or(&fullscreen_geo);
++
++        match (fullscreen.start_at, fullscreen.ended_at) {
++            (Some(started), _) => {
++                let progress = (Instant::now().duration_since(started).as_secs_f64()
++                    / fullscreen_animation_duration().as_secs_f64())
++                .clamp(0.0, 1.0);
++                (
++                    ease(
++                        EaseInOutCubic,
++                        EaseRectangle(*previous_geo),
++                        EaseRectangle(fullscreen_geo),
++                        progress,
++                    )
++                    .0,
++                    ease(EaseInOutCubic, 0.0, 1.0, progress as f32),
++                )
++            }
++            (_, Some(ended)) => {
++                let progress = (Instant::now().duration_since(ended).as_secs_f64()
++                    / fullscreen_animation_duration().as_secs_f64())
++                .clamp(0.0, 1.0);
++                (
++                    ease(
++                        EaseInOutCubic,
++                        EaseRectangle(fullscreen_geo),
++                        EaseRectangle(*previous_geo),
++                        progress,
++                    )
++                    .0,
++                    ease(EaseInOutCubic, 1.0, 0.0, progress as f32),
++                )
++            }
++            (None, None) => (fullscreen_geo, 1.0),
++        }
++    }
++
+     #[profiling::function]
+     pub fn refresh(&mut self) {
+         // seems it removes dead windows
+@@ -480,6 +536,12 @@ impl Workspace {
+         self.tiling_layer.refresh();
+     }
+ 
++    pub fn set_animations_enabled(&mut self, enabled: bool) {
++        self.animations_enabled = enabled;
++        self.floating_layer.set_animations_enabled(enabled);
++        self.tiling_layer.set_animations_enabled(enabled);
++    }
++
+     fn has_activation_token(&self, xdg_activation_state: &XdgActivationState) -> bool {
+         xdg_activation_state.tokens().any(|(_, data)| {
+             if let ActivationContext::Workspace(handle) =
+@@ -551,7 +613,7 @@ impl Workspace {
+         for f in self.fullscreen_surfaces.iter_mut() {
+             if let Some(start) = f.start_at.as_ref() {
+                 let duration_since = Instant::now().duration_since(*start);
+-                if duration_since > FULLSCREEN_ANIMATION_DURATION {
++                if duration_since >= fullscreen_animation_duration() {
+                     f.start_at.take();
+                     self.dirty.store(true, Ordering::SeqCst);
+                 }
+@@ -560,7 +622,7 @@ impl Workspace {
+ 
+         self.fullscreen_surfaces.retain(|f| {
+             if let Some(end) = f.ended_at
+-                && Instant::now().duration_since(end) >= FULLSCREEN_ANIMATION_DURATION
++                && Instant::now().duration_since(end) >= fullscreen_animation_duration()
+             {
+                 self.dirty.store(true, Ordering::SeqCst);
+                 return false;
+@@ -1052,26 +1114,28 @@ impl Workspace {
+             .position(|f| f.ended_at.is_none() && &f.surface == surface)
+         {
+             let fullscreen_state = self.fullscreen_surfaces.get(idx)?.clone();
+-            {
++            if self.animations_enabled {
+                 let f = self.fullscreen_surfaces.get_mut(idx)?;
+                 f.previous_geometry = Some(to);
+                 f.ended_at = Some(
+                     Instant::now()
+-                        - (FULLSCREEN_ANIMATION_DURATION
++                        - (fullscreen_animation_duration()
+                             - f.start_at
+                                 .take()
+                                 .map(|earlier| {
+                                     Instant::now()
+                                         .duration_since(earlier)
+-                                        .min(FULLSCREEN_ANIMATION_DURATION)
++                                        .min(fullscreen_animation_duration())
+                                 })
+-                                .unwrap_or(FULLSCREEN_ANIMATION_DURATION)),
++                                .unwrap_or(fullscreen_animation_duration())),
+                 );
++            } else {
++                self.fullscreen_surfaces.remove(idx);
+             }
+ 
+             fullscreen_state.surface.set_minimized(true);
+             return Some(MinimizedWindow::Fullscreen {
+-                surface: fullscreen_state.surface,
++                surface: fullscreen_state.surface.clone(),
+                 previous: fullscreen_state
+                     .previous_state
+                     .zip(fullscreen_state.previous_geometry)
+@@ -1276,7 +1340,7 @@ impl Workspace {
+             surface: window.clone(),
+             previous_state: restore,
+             previous_geometry,
+-            start_at: Some(Instant::now()),
++            start_at: self.animations_enabled.then(Instant::now),
+             ended_at: None,
+         });
+     }
+@@ -1337,25 +1401,34 @@ impl Workspace {
+             focus_stack.retain(|t| t != &surface.surface);
+         }
+ 
+-        surface.ended_at = Some(
+-            Instant::now()
+-                - (FULLSCREEN_ANIMATION_DURATION
+-                    - surface
+-                        .start_at
+-                        .take()
+-                        .map(|earlier| {
+-                            Instant::now()
+-                                .duration_since(earlier)
+-                                .min(FULLSCREEN_ANIMATION_DURATION)
+-                        })
+-                        .unwrap_or(FULLSCREEN_ANIMATION_DURATION)),
+-        );
++        if self.animations_enabled {
++            surface.ended_at = Some(
++                Instant::now()
++                    - (fullscreen_animation_duration()
++                        - surface
++                            .start_at
++                            .take()
++                            .map(|earlier| {
++                                Instant::now()
++                                    .duration_since(earlier)
++                                    .min(fullscreen_animation_duration())
++                            })
++                            .unwrap_or(fullscreen_animation_duration())),
++            );
+ 
+-        Some((
+-            surface.surface.clone(),
+-            surface.previous_state.clone(),
+-            surface.previous_geometry,
+-        ))
++            Some((
++                surface.surface.clone(),
++                surface.previous_state.clone(),
++                surface.previous_geometry,
++            ))
++        } else {
++            let surface = self.fullscreen_surfaces.remove(idx);
++            Some((
++                surface.surface,
++                surface.previous_state,
++                surface.previous_geometry,
++            ))
++        }
+     }
+ 
+     #[must_use]
+@@ -1655,10 +1728,14 @@ impl Workspace {
+                     .as_ref()
+                     .unwrap_or(&fullscreen_geo);
+ 
+-                let (target_geo, alpha) = match (fullscreen.start_at, fullscreen.ended_at) {
++                // 动画关闭时跳过全屏过渡，直接使用终态几何
++                let (target_geo, alpha) = if !crate::animations::enabled() {
++                    (fullscreen_geo, 1.0)
++                } else {
++                    match (fullscreen.start_at, fullscreen.ended_at) {
+                     (Some(started), _) => {
+                         let duration = Instant::now().duration_since(started).as_secs_f64()
+-                            / FULLSCREEN_ANIMATION_DURATION.as_secs_f64();
++                            / fullscreen_animation_duration().as_secs_f64();
+                         (
+                             ease(
+                                 EaseInOutCubic,
+@@ -1672,7 +1749,7 @@ impl Workspace {
+                     }
+                     (_, Some(ended)) => {
+                         let duration = Instant::now().duration_since(ended).as_secs_f64()
+-                            / FULLSCREEN_ANIMATION_DURATION.as_secs_f64();
++                            / fullscreen_animation_duration().as_secs_f64();
+                         (
+                             ease(
+                                 EaseInOutCubic,
+@@ -1685,6 +1762,7 @@ impl Workspace {
+                         )
+                     }
+                     (None, None) => (fullscreen_geo, 1.0),
++                    }
+                 };
+ 
+                 let render_loc = target_geo
+@@ -1753,23 +1831,7 @@ impl Workspace {
+                 .all(|f| !f.alive() || f.ended_at.is_some())
+         {
+             // floating surfaces
+-            let alpha = match &overview.0 {
+-                OverviewMode::Started(_, started) => {
+-                    (1.0 - (Instant::now().duration_since(*started).as_millis()
+-                        / ANIMATION_DURATION.as_millis()) as f32)
+-                        .max(0.0)
+-                        * 0.4
+-                        + 0.6
+-                }
+-                OverviewMode::Ended(_, ended) => {
+-                    ((Instant::now().duration_since(*ended).as_millis()
+-                        / ANIMATION_DURATION.as_millis()) as f32)
+-                        * 0.4
+-                        + 0.6
+-                }
+-                OverviewMode::Active(_) => 0.6,
+-                OverviewMode::None => 1.0,
+-            };
++            let alpha = overview_fade_alpha(&overview.0);
+ 
+             self.floating_layer.render(
+                 renderer,
+@@ -1792,18 +1854,7 @@ impl Workspace {
+                 &mut |elem| push(elem.into()),
+             );
+ 
+-            let alpha = match &overview.0 {
+-                OverviewMode::Started(_, start) => Some(
+-                    (Instant::now().duration_since(*start).as_millis() as f64 / 100.0).min(1.0)
+-                        as f32,
+-                ),
+-                OverviewMode::Active(_) => Some(1.0),
+-                OverviewMode::Ended(_, ended) => Some(
+-                    1.0 - (Instant::now().duration_since(*ended).as_millis() as f64 / 100.0)
+-                        .min(1.0) as f32,
+-                ),
+-                OverviewMode::None => None,
+-            };
++            let alpha = overview.0.alpha();
+ 
+             //tiling surfaces
+             self.tiling_layer.render(
+@@ -1879,42 +1930,7 @@ impl Workspace {
+ 
+         if let Some(fullscreen) = top_fullscreen {
+             let fullscreen_geo = self.fullscreen_geometry_for(fullscreen);
+-            let previous_geo = fullscreen
+-                .previous_geometry
+-                .as_ref()
+-                .unwrap_or(&fullscreen_geo);
+-
+-            let (target_geo, alpha) = match (fullscreen.start_at, fullscreen.ended_at) {
+-                (Some(started), _) => {
+-                    let duration = Instant::now().duration_since(started).as_secs_f64()
+-                        / FULLSCREEN_ANIMATION_DURATION.as_secs_f64();
+-                    (
+-                        ease(
+-                            EaseInOutCubic,
+-                            EaseRectangle(*previous_geo),
+-                            EaseRectangle(fullscreen_geo),
+-                            duration,
+-                        )
+-                        .0,
+-                        ease(EaseInOutCubic, 0.0, 1.0, duration),
+-                    )
+-                }
+-                (_, Some(ended)) => {
+-                    let duration = Instant::now().duration_since(ended).as_secs_f64()
+-                        / FULLSCREEN_ANIMATION_DURATION.as_secs_f64();
+-                    (
+-                        ease(
+-                            EaseInOutCubic,
+-                            EaseRectangle(fullscreen_geo),
+-                            EaseRectangle(*previous_geo),
+-                            duration,
+-                        )
+-                        .0,
+-                        ease(EaseInOutCubic, 1.0, 0.0, duration),
+-                    )
+-                }
+-                (None, None) => (fullscreen_geo, 1.0),
+-            };
++            let (target_geo, alpha) = self.fullscreen_transition(fullscreen, fullscreen_geo);
+ 
+             let render_loc = target_geo
+                 .loc
+@@ -1944,23 +1960,7 @@ impl Workspace {
+                 .all(|f| !f.alive() || f.ended_at.is_some())
+         {
+             // floating surfaces
+-            let alpha = match &overview.0 {
+-                OverviewMode::Started(_, started) => {
+-                    (1.0 - (Instant::now().duration_since(*started).as_millis()
+-                        / ANIMATION_DURATION.as_millis()) as f32)
+-                        .max(0.0)
+-                        * 0.4
+-                        + 0.6
+-                }
+-                OverviewMode::Ended(_, ended) => {
+-                    ((Instant::now().duration_since(*ended).as_millis()
+-                        / ANIMATION_DURATION.as_millis()) as f32)
+-                        * 0.4
+-                        + 0.6
+-                }
+-                OverviewMode::Active(_) => 0.6,
+-                OverviewMode::None => 1.0,
+-            };
++            let alpha = overview_fade_alpha(&overview.0);
+ 
+             self.floating_layer
+                 .render_popups(renderer, alpha, scanout_node, &mut |elem| push(elem.into()));
+diff --git a/src/shell/zoom.rs b/src/shell/zoom.rs
+index b3a795e7..0eac9578 100644
+--- a/src/shell/zoom.rs
++++ b/src/shell/zoom.rs
+@@ -9,7 +9,10 @@ use cosmic::{
+ };
+ use cosmic_comp_config::{ZoomConfig, ZoomMovement};
+ use cosmic_config::ConfigSet;
+-use keyframe::{ease, functions::Linear};
++use keyframe::{
++    ease,
++    functions::{EaseInOutCubic, Linear},
++};
+ use smithay::{
+     backend::{
+         input::{InputTime, TabletToolDescriptor},
+@@ -55,7 +58,7 @@ use crate::{
+ };
+ 
+ use super::{
+-    ANIMATION_DURATION, check_grab_preconditions,
++    animation_duration, check_grab_preconditions,
+     focus::target::PointerFocusTarget,
+     grabs::{ContextMenu, Item, MenuAlignment, MenuGrab},
+ };
+@@ -72,6 +75,7 @@ pub struct ZoomState {
+ pub struct OutputZoomState {
+     pub(super) level: f64,
+     pub(super) previous_level: Option<(f64, Instant)>,
++    animations_enabled: bool,
+     focal_point: Point<f64, Local>,
+     previous_point: Option<(Point<f64, Local>, Instant)>,
+     element: ZoomElement,
+@@ -84,6 +88,7 @@ impl OutputZoomState {
+         level: f64,
+         increment: u32,
+         movement: ZoomMovement,
++        animations_enabled: bool,
+         loop_handle: LoopHandle<'static, State>,
+         mut theme: cosmic::Theme,
+     ) -> OutputZoomState {
+@@ -104,6 +109,7 @@ impl OutputZoomState {
+         OutputZoomState {
+             level,
+             previous_level: None,
++            animations_enabled,
+             focal_point,
+             previous_point: None,
+             element,
+@@ -111,15 +117,20 @@ impl OutputZoomState {
+     }
+ 
+     pub fn animating_focal_point(&mut self) -> Point<f64, Local> {
++        if !self.animations_enabled {
++            self.previous_point = None;
++            return self.focal_point;
++        }
++
+         if let Some((old_point, start)) = self.previous_point.as_ref() {
+-            let duration_since = Instant::now().duration_since(*start);
+-            if duration_since > ANIMATION_DURATION {
++            if Instant::now().duration_since(*start) > animation_duration() {
+                 self.previous_point.take();
+                 return self.focal_point;
+             }
+ 
+-            let percentage =
+-                duration_since.as_millis() as f32 / ANIMATION_DURATION.as_millis() as f32;
++            let percentage = (Instant::now().duration_since(*start).as_secs_f32()
++                / animation_duration().as_secs_f32())
++            .clamp(0.0, 1.0);
+             ease(
+                 Linear,
+                 EasePoint(*old_point),
+@@ -141,11 +152,15 @@ impl OutputZoomState {
+     }
+ 
+     pub fn animating_level(&self) -> f64 {
+-        if let Some((old_level, start)) = self.previous_level.as_ref() {
+-            let percentage = Instant::now().duration_since(*start).as_millis() as f32
+-                / ANIMATION_DURATION.as_millis() as f32;
++        if !self.animations_enabled {
++            return self.level;
++        }
+ 
+-            ease(Linear, *old_level, self.level, percentage)
++        if let Some((old_level, start)) = self.previous_level.as_ref() {
++            let percentage = (Instant::now().duration_since(*start).as_secs_f32()
++                / animation_duration().as_secs_f32())
++            .clamp(0.0, 1.0);
++            ease(EaseInOutCubic, *old_level, self.level, percentage)
+         } else {
+             self.level
+         }
+@@ -159,7 +174,7 @@ impl OutputZoomState {
+         if self
+             .previous_level
+             .as_ref()
+-            .is_some_and(|(_, start)| Instant::now().duration_since(*start) > ANIMATION_DURATION)
++            .is_some_and(|(_, start)| Instant::now().duration_since(*start) > animation_duration())
+         {
+             self.previous_level.take();
+         }
+@@ -168,6 +183,7 @@ impl OutputZoomState {
+     }
+ 
+     pub fn update(&mut self, level: f64, animate: bool, movement: ZoomMovement, increment: u32) {
++        let animate = animate && self.animations_enabled;
+         self.previous_level = animate.then_some((self.animating_level(), Instant::now()));
+         self.level = level;
+         self.element.set_additional_scale(level.min(4.));
+@@ -178,6 +194,15 @@ impl OutputZoomState {
+         });
+     }
+ 
++    /// 打开/关闭本输出的缩放动画（由配置驱动；关闭时清掉过渡状态，直接落到终态）
++    pub fn set_animations_enabled(&mut self, enabled: bool) {
++        self.animations_enabled = enabled;
++        if !enabled {
++            self.previous_level = None;
++            self.previous_point = None;
++        }
++    }
++
+     fn render<R>(
+         &mut self,
+         renderer: &mut R,

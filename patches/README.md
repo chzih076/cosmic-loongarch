@@ -47,4 +47,18 @@ Signed-off-by: H076lik <chzih076@users.noreply.github.com>
 
 ## 当前补丁
 
-_（暂无。规划中：`0001-animations-config`（cosmic-comp，`upstreamable`）、`0002-dmabuf-render-node`（cosmic-comp，`loongarch-only`/`upstreamable` 待定）——见 `docs/KNOWN-ISSUES.md` K-006 / K-003。）_
+| 补丁 | 目标仓库 | 分级 | 上游状态 | 内容 | 验证 |
+|---|---|---|---|---|---|
+| `cosmic-comp/0001-animations-enabled-and-speed.patch` | cosmic-comp | `upstreamable` | 参考 issue #376 / PR #2209（均未合并）| 动画开关 `enabled` + 时长倍率 `speed`；补 `#[serde(default)]`；新增 `src/animations.rs` 全局 | 编译通过；干净 worktree 上 `git apply` 零冲突；16 文件 / 2233 行 |
+
+配置方式：
+
+```ron
+// ~/.config/cosmic/com.system76.CosmicComp/v1/animations
+(
+    enabled: true,   // false = 关闭动画（直接落到终态）
+    speed: 2.0,      // 1.0 = 上游默认；2.0 = 快一倍（0.25–8.0）
+)
+```
+
+改动即刻生效（`cosmic-config` 监听文件变更），无需重启会话。

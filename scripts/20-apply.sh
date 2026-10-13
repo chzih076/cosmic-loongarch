@@ -26,7 +26,10 @@ case "$MODE" in
   revert)
     for r in "${REPOS[@]}"; do
       git -C "$BUILD_DIR/$r" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
-      git -C "$BUILD_DIR/$r" checkout -- . && ok "已撤销 $r 的工作区改动"
+      git -C "$BUILD_DIR/$r" reset -q 2>/dev/null || true
+      git -C "$BUILD_DIR/$r" checkout -- . 2>/dev/null || true
+      git -C "$BUILD_DIR/$r" clean -fdq 2>/dev/null || true   # 清掉补丁新增的文件（不影响 gitignore 的 target/）
+      ok "已撤销 $r 的补丁改动"
     done
     rm -f "$applied_file"; ok "20-apply --revert 完成"
     ;;
