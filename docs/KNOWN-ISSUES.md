@@ -235,7 +235,20 @@
   CONF
   systemctl --user restart xdg-desktop-portal
   ```
-- **状态**：`待复测`（先验证补键是否已解决；若仍概率性变暗再上 portal 后手）
+- **实测确认（2026-10-13 晚）**：portal 归属确实会改变行为 —— 在 COSMIC 里按截图键，
+  产生的文件是 `~/图片/Screenshot_YYYYMMDD_HHMMSS.png`，**命名即 KDE Spectacle 的** ✗
+  → COSMIC 自身的截图接口被 KDE 后端接管（`cosmic-screenshot` → portal → `cosmic` 后端本应响应）
+- **受影响接口**（两后端都声明）：`Screenshot`、`Settings`、`ScreenCast`、`FileChooser`、`RemoteDesktop`、`Access`
+- **有效修法（已在本机执行）**：让**运行中的 portal 进程**继承正确的桌面归属再重启
+  （注意：`systemctl --user show-environment` 显示 COSMIC，但**旧 portal 进程**仍是 24h 前 KDE 会话启的）
+  ```bash
+  systemctl --user set-environment XDG_CURRENT_DESKTOP=COSMIC
+  systemctl --user restart xdg-desktop-portal
+  ```
+  已封装为一键工具：`~/.local/bin/desktop-portals [cosmic|kde|status]`
+  （切到 KDE 用 `desktop-portals kde`，否则 KDE 侧截图/文件选择器会被 COSMIC 后端接管）
+- **不宜用静态 `portals.conf` 钉死**：双桌面共享同一用户级 portal，钉死会牺牲另一侧
+- **状态**：`已本地缓解（按桌面切换 portal 归属）`
 ### K-010 · 磨砂玻璃的效率成本（不是 bug，上游已知的预期限制）
 
 - **现象**：开启磨砂玻璃后，请求模糊的窗口**内部元素**一有动作（滚动、进度动画、列表刷新等），
