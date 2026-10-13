@@ -57,7 +57,20 @@
   然后 `update-desktop-database ~/.local/share/applications`
 - **上游应做的**：让 `cosmic-comp` 读取并转发 `_NET_WM_ICON`（作为图标来源之一），
   或在 app_id 无法匹配 `.desktop` 时回退到窗口自带图标
-- **状态**：`已知上游缺口（cosmic-applets #1464 跟踪）`；可用桌面文件绕过
+- **本机绕过工具（已编写，2026-10-13）**：`~/.local/bin/x11-icon-fix`
+  ```bash
+  x11-icon-fix list                        # 列出当前 X11 窗口与其 WM_CLASS（class 串即 app_id）
+  x11-icon-fix add <WM_CLASS> --icon <图标名或路径> [--name 显示名] [--exec 启动命令]
+  x11-icon-fix remove <WM_CLASS>
+  ```
+  原理：在 `~/.local/share/applications/` 生成 `<class>.desktop` 并声明
+  `StartupWMClass=<class>` + `Icon=…`，随后 `update-desktop-database`；
+  COSMIC 面板即可按 `app_id → 桌面文件` 的方式解析出图标。
+  实测环境：COSMIC 的 Xwayland 为 `DISPLAY=:1`；`xprop`/`xwininfo`/`xdotool`/`update-desktop-database` 均已具备。
+- **真实修复并不简单**：即使 `cosmic-comp` 读取了 `_NET_WM_ICON`，面板/托盘也要有渠道拿到该图标
+  （现有 `app_id → .desktop` 链路不携带图标像素），因此上游需要协议/接口层面的改动 →
+  短期内以桌面文件绕过为主。
+- **状态**：`已知上游缺口（cosmic-applets #1464 跟踪）`；已提供本机绕过工具
 
 ### K-002 · libjpeg-turbo 的 CMake 拒绝 loongarch64
 
