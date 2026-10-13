@@ -1,0 +1,18 @@
+Upstream: pop-os/<repo>@<commit>
+Grade: upstreamable | loongarch-only | local-hack
+Issue: <https://github.com/pop-os/<repo>/issues/NNN>
+Evidence: |
+  <在这里贴可复现的证据：命令与输出、journal 片段、coredump 栈、性能数字>
+Retire-when: <仅 local-hack 必填：满足什么条件即可删除本补丁>
+Signed-off-by: H076lik <chzih076@users.noreply.github.com>
+
+---
+# 用法说明（复制上面字段到补丁文件的最前面，本行以下不要包含在补丁里）
+#
+# 建议生成方式（在构建树对应仓库里）：
+#   git checkout -b loongarch/<slug>
+#   <修改代码并提交，commit message 保留 DCO 的 Signed-off-by>
+#   git format-patch -1 --stdout > patches/<repo>/NNNN-<slug>.patch
+#
+# 注意：format-patch 生成的头部是 `From <sha> <date>` + Subject/Body；
+# 本模板的 Upstream/Grade/Issue/Evidence 字段请手工补在 `---` 之前（git apply 会忽略它们）。

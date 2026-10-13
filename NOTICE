@@ -1,0 +1,32 @@
+# NOTICE · 上游项目与许可署名
+
+本仓库（cosmic-loongarch）**只包含补丁、脚本与文档**，其目标是适配下列上游项目在
+LoongArch64 / AOSC OS 上的运行。**本仓库不包含、不再分发任何上游源码**；使用者需自行从
+官方渠道获取（URL 见 `upstream.lock`）。
+
+## 上游项目
+
+| 项目 | 官方地址 | 许可 | 与本仓库的关系 |
+|---|---|---|---|
+| cosmic-epoch（及各子模块：cosmic-comp / cosmic-session / cosmic-panel / cosmic-settings …）| https://github.com/pop-os/cosmic-epoch | GPL-3.0 | 被适配对象；本仓库补丁以其为基底 |
+| libcosmic | https://github.com/pop-os/libcosmic | GPL-3.0 | COSMIC 的 UI/工具库（构建时由 cargo 从 git 获取）|
+| seatd / libseat | https://git.sr.ht/~kennylevinsen/seatd | MIT | 会话/DRM 后端依赖，由 `scripts/00-deps.sh` 从官方源码编译 |
+
+## 构建期第三方依赖（由发行版或上游各自提供，许可从属各自项目）
+
+| 依赖 | 许可（概览）| 说明 |
+|---|---|---|
+| libjpeg-turbo | BSD-3-Clause / IJG | `turbojpeg-sys` 在 loongarch64 上必须改用系统库（见 `docs/KNOWN-ISSUES.md`）|
+| Mesa / RADV | MIT | Vulkan/OpenGL 驱动 |
+| Rust 生态依赖 | 各自许可（多数 MIT/Apache-2.0）| 由 cargo 解析，本仓库不打包 |
+
+## 本仓库自身的许可
+
+补丁与脚本：**GPL-3.0**（见 `LICENSE`）。理由：补丁包含上游代码的上下文片段，作为衍生作品沿用上游许可；
+脚本与文档亦统一采用同一许可，以简化合规。
+
+## 声明
+
+- 本仓库为**社区非官方适配**，与 System76 / Pop!_OS / COSMIC 上游无隶属、赞助或背书关系。
+- 「COSMIC」等名称与标识归其各自权利人所有。
+- 若上游或权利人认为本仓库中某项内容不当，请通过 Issue 联系，我们会及时处理。

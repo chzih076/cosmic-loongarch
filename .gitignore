@@ -1,0 +1,9 @@
+# 本仓库只包含补丁与脚本，以下内容永远不会入库
+build/
+out/
+*.sysext
+cosmic-sysext/
+state/*
+!state/.gitkeep
+*.log
+*.tmp

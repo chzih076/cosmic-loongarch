@@ -1,0 +1,38 @@
+# cosmic-loongarch upstream lockfile
+# 用途：锁定上游 cosmic-epoch 及其子模块的精确 commit，保证任何人构建出同一份代码
+# 生成：scripts/10-fetch.sh --lock（本文件由脚本维护，可手工检查但不要手改）
+# 生成时间：2026-10-13T15:38:43+08:00
+# 格式：<name> <commit> <官方 URL>（name = 子模块目录名，与 patches/<name>/ 对应）
+# 来源：SHA 取自父仓库 gitlink（git ls-tree HEAD），URL 取自 .gitmodules
+#
+cosmic-epoch 364341d52454bf3a016d03185c6aff887247aab7 https://github.com/pop-os/cosmic-epoch
+cosmic-applets 406d1b7d627138fdf4078f654268d3d8774e50f1 https://github.com/pop-os/cosmic-applets
+cosmic-app-library 1107375789e3f60e120b6dc5b81379771ecaa811 https://github.com/pop-os/cosmic-applibrary
+cosmic-bg 91d525b7310f5a497c9fd09a25d2710eb9f8a6f7 https://github.com/pop-os/cosmic-bg.git
+cosmic-comp 41497b42d9744d9963c4c6d17e8add49489b45ee https://github.com/pop-os/cosmic-comp
+cosmic-edit 5ddf5115995e02fd71851a42bf0e6a9c9b5a1ce5 https://github.com/pop-os/cosmic-edit
+cosmic-files ac5cef76fa60b5a329bfda3d30825489ec28af53 https://github.com/pop-os/cosmic-files.git
+cosmic-greeter 98df07df93df1cb091c95451f7162dca1a2ae2dd https://github.com/pop-os/cosmic-greeter
+cosmic-icons f1a282a0822aed1f0083dd2ab2e6c65bd5b401eb https://github.com/pop-os/cosmic-icons.git
+cosmic-idle 21e983c63e75640ab0055495e768a5c616742c19 https://github.com/pop-os/cosmic-idle.git
+cosmic-initial-setup 8b025bc9eec4844d8c01fb238e5298b3db920b3f https://github.com/pop-os/cosmic-initial-setup
+cosmic-launcher 03195ddb097c6ad83c4072917d60d900b8bd944f https://github.com/pop-os/cosmic-launcher
+cosmic-monitor a79ce9e7d2259a82150d56978fb7a094bd4ec2f0 https://github.com/pop-os/cosmic-monitor.git
+cosmic-notifications 1e4c1f11fdcae273d6954fd0bfc54749a6145267 https://github.com/pop-os/cosmic-notifications
+cosmic-osd 9b14ee017fb8fdb7d03d73da597cf17b89d890f7 https://github.com/pop-os/cosmic-osd.git
+cosmic-osk 1b7ec698b79d248d6a59ff426f453fc7ce3edc91 https://github.com/pop-os/cosmic-osk
+cosmic-panel 3ce6ce1cec97669f91e809962d9446aaefe8a06e https://github.com/pop-os/cosmic-panel
+cosmic-player 900453787f999ec151b8d58683923e3110b727e1 https://github.com/pop-os/cosmic-player.git
+cosmic-randr 85efc7febb99876094cf90af6dbce0927ad8cca7 https://github.com/pop-os/cosmic-randr.git
+cosmic-screenshot 07e27587eb387ecf38cb4692ccbf25ad20760d22 https://github.com/pop-os/cosmic-screenshot
+cosmic-session 8093b59bb1262b0612d814e6540ba936303f735a https://github.com/pop-os/cosmic-session
+cosmic-settings 58aeb65244b8830880e8b6ced89dcd25663f20b1 https://github.com/pop-os/cosmic-settings
+cosmic-settings-daemon 9e4ae69fc175191f15789d35423806ea0f093c9d https://github.com/pop-os/cosmic-settings-daemon
+cosmic-sound-theme bf5335fe1af0cb3bee83e1ad2371410ee434658d https://github.com/pop-os/cosmic-sound-theme.git
+cosmic-store c7b36a2fdccf1ce88944793af67c3664413ee560 https://github.com/pop-os/cosmic-store.git
+cosmic-term 3bfca1eb804de2f069e62d0709982beca908cb01 https://github.com/pop-os/cosmic-term.git
+cosmic-viewer 77ba62deb7027217efab1999e90670f3c89c5a02 https://github.com/pop-os/cosmic-viewer.git
+cosmic-wallpapers da595bba495cb8fc57f26505621fc25000218349 https://github.com/pop-os/cosmic-wallpapers.git
+cosmic-workspaces-epoch cb953ea0e6fb45ac8f62f9c52f1347c971388e03 https://github.com/pop-os/cosmic-workspaces-epoch/
+pop-launcher 8a09fa50a9fbbe66a97afe3865b5e61dd1d0432c https://github.com/pop-os/launcher.git
+xdg-desktop-portal-cosmic 9d35e6300b69cf06da723a502a9a56604a022786 https://github.com/pop-os/xdg-desktop-portal-cosmic.git
