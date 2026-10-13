@@ -25,6 +25,7 @@
 | K-009 | System Monitor 列表中文豆腐块（脚本回退未生效）| 已定性；上游无同类 issue，可新报 |
 | K-010 | 磨砂玻璃的 GPU 成本（上游视为预期限制）| 成本模型 + 缓解手段 |
 | K-011 | 主题配置缺 `list_button`/`accent_text`/`window_hint` → 回退暗色 | 已修复（明暗两套均补齐，加载错误归零）|
+| K-012 | 任务栏不显示 XWayland 应用的窗口图标（`_NET_WM_ICON` 未被消费）| 已定性；上游 cosmic-applets #1464 跟踪；可用桌面文件绕过 |
 
 ### 协作约定
 

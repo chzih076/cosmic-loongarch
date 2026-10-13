@@ -24,6 +24,41 @@
   ```
 - **状态**：`已内置规避`（`scripts/30-build.sh`）
 
+### K-012 · 任务栏/托盘不显示 XWayland(X11) 应用的窗口图标
+
+- **现象**：X11（经 XWayland 运行）的应用在面板/程序坞上显示为**通用齿轮图标**，而不是应用自身图标
+  （典型：Wine 应用、Minecraft 等仍在 XWayland 下运行的程序）
+- **影响**：仅图标观感与辨识度；应用功能、窗口管理均正常
+- **机制（已核实）**：
+  1. COSMIC 通过 **`app_id`** 匹配 `.desktop` 文件来取图标；X11 窗口的 `app_id`
+     由 `WM_CLASS` 的 **class 串** 推导；
+  2. X11 应用自带的 **`_NET_WM_ICON`（图标像素）没有被消费** —— `cosmic-comp` 源码中
+     未见读取 `_NET_WM_ICON` 的处理，因此**图标像素这条路径是缺的** ✗；
+  3. 当 `WM_CLASS` 与任何 `.desktop` 都不匹配（或 `WM_CLASS` 畸形、`app_id` 为空）时，
+     面板只能显示通用图标。
+- **本机数据**：363 个 `.desktop` 中仅 **27 个**声明 `StartupWMClass` → 覆盖率低，
+  Wine/自编译/打包不规范的应用基本都会落空
+- **上游 issue（对口，均 open）**：
+  - [cosmic-applets #1464 · [App Tray] make xWayland apps show their window icon](https://github.com/pop-os/cosmic-applets/issues/1464)
+    （2026-07-06；正文例子就是 Minecraft 显示通用齿轮图标）
+  - [cosmic-comp #2798 · XWayland windows with a malformed WM_CLASS get an empty app_id and a generic dock icon](https://github.com/pop-os/cosmic-comp/issues/2798)
+  - 相关：[cosmic-comp #2877](https://github.com/pop-os/cosmic-comp/issues/2877)（Flatpak 应用的 app_id/图标解析）
+- **可行的本地绕过（不改代码）**：为具体应用补一个桌面文件，显式声明 `StartupWMClass` 与 `Icon`：
+  ```ini
+  # ~/.local/share/applications/<name>.desktop
+  [Desktop Entry]
+  Type=Application
+  Name=<显示名>
+  Exec=<启动命令>
+  Icon=<图标名或绝对路径>
+  StartupWMClass=<该窗口的 WM_CLASS class 串>
+  Categories=Game;
+  ```
+  然后 `update-desktop-database ~/.local/share/applications`
+- **上游应做的**：让 `cosmic-comp` 读取并转发 `_NET_WM_ICON`（作为图标来源之一），
+  或在 app_id 无法匹配 `.desktop` 时回退到窗口自带图标
+- **状态**：`已知上游缺口（cosmic-applets #1464 跟踪）`；可用桌面文件绕过
+
 ### K-002 · libjpeg-turbo 的 CMake 拒绝 loongarch64
 
 - **现象**：`cosmic-viewer` 构建到 `turbojpeg-sys v1.2.0` 时报
