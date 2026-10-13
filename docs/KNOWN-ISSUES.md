@@ -70,7 +70,20 @@
 - **根因**：`start-cosmic` 会把当前环境导入 systemd 用户会话；从 TTY 启动时，KDE 先前导入的变量仍在用户级 systemd 环境中
 - **规避**：启动 COSMIC 前清理这些变量（或改由登录管理器直接进入 COSMIC，见 `docs/BUILD.md`）
 - **证据**：`systemctl --user show-environment | grep -E 'KDE_FULL_SESSION|DESKTOP_SESSION'`
-- **状态**：`仅记录`（可脚本化）
+- **严重性升级（2026-10-13 实测）**：从带 KDE 环境的上下文（systemd-run / 服务 / 用户 manager 环境）启动时，
+  `cosmic-comp` 会因 `WAYLAND_DISPLAY`/`DISPLAY` 存在而**误选 winit（嵌套）后端**并直接失败：
+  ```
+  WARN  cosmic_comp::backend: Initializing X11 Backend failed.
+  ERROR cosmic_comp: Failed to initilize winit backend: EventLoopCreation(Os(OsError { error: NoCompositor }))
+  → cosmic-session: cosmic-comp exited with error code 1 / 137
+  ```
+  实测：**清掉** `WAYLAND_DISPLAY DISPLAY KDE_FULL_SESSION KDE_SESSION_VERSION DESKTOP_SESSION
+  SESSION_MANAGER QT_WAYLAND_RECONNECT ICEAUTHORITY KDE_APPLICATIONS_AS_SCOPE QT_QPA_PLATFORMTHEME`
+  后即可正常走 DRM/KMS 后端并启动成功（同一 VT、同一 tty3）。
+- **规避（已验证）**：① 从干净的 TTY 登录后执行 `start-cosmic`（推荐）；② 自动化时用
+  `systemd-run -p PAMName=login -p TTYPath=/dev/tty3 -p StandardInput=tty` 并在命令前清掉上述变量。
+  注意：以 root 身份启动的会话会读 `/root/.config`，**配置不生效**，因此不要用 root 跑会话。
+- **状态**：`仅记录`（可脚本化；已给出清变量清单）
 
 ### K-006 · 动画参数全部硬编码，无配置项
 
