@@ -143,6 +143,30 @@
 - **状态**：`观察中`（已定性：表格文本路径缺回退；候选补丁 0003 = 给 libcosmic 的 table 文本走标准文本管线，
   但 libcosmic 是 git 依赖，需 vendoring/patch 机制，工程量较大）
 
+### K-010 · 磨砂玻璃的效率成本（不是 bug，上游已知的预期限制）
+
+- **现象**：开启磨砂玻璃后，请求模糊的窗口**内部元素**一有动作（滚动、进度动画、列表刷新等），
+  GPU 利用率明显上升；窗口本身的移动反而不是主因
+- **定性**：**非正确性问题**。上游 issue #2650 中，维护者 Drakulix 明确回复：
+  *"This is expected currently, we are aware of the limitations"* ✔ 与本机观察一致
+- **机制（代码级，已验证）**：`src/backend/render/wayland/blur_effect.rs`
+  - 模糊纹理按 `{renderer_id, offset, passes, region, src}` 做脏判定缓存 →
+    **窗口内部内容变化不会触发重新模糊**（`dirty` 五项均未变 → `commit` 不递增）
+  - 剩余成本来自**每帧对模糊结果的合成采样**，与「模糊面积 × 通道数(`passes`)」成正比
+  - 档位映射：`MAX_STEPS = 15`；`strength = (theme.frosted as u8 + 1)`；
+    `BlurStrength` 共 14 档（ExtremelyLow…ExtremelyHigh2），本机当前 `High2`（索引 9）→ `strength = 10`
+- **上游相关反馈**：
+  - [#2650](https://github.com/pop-os/cosmic-comp/issues/2650) 面板模糊 + 窗口模糊的 GPU 成本 ≈ 两者单独之和的 2 倍（closed，标记为预期限制）
+  - [#2795](https://github.com/pop-os/cosmic-comp/issues/2795) 每工作区多个磨砂窗口后性能下降（open；报告者实测**降低 frost 强度后显著改善**，与上表一致）
+  - [#2905](https://github.com/pop-os/cosmic-comp/issues/2905) 面板/程序坞模糊 + 副屏视频 → 输入延迟（open）
+- **缓解手段（不改代码）**：
+  1. 降低档位：`frosted` 从 `High2` → `High`/`Medium2`（成本随 `passes` 近似线性下降）
+  2. 只关窗口模糊、保留面板/小部件：`frosted_windows = false`（窗口内元素动作是主要成本来源）
+  3. 减少同屏磨砂窗口数量/面积
+- **我们的策略**：**暂不做本地优化补丁** —— 上游视为预期限制，方案空间未明；
+  若日后要做，须先按 #2795 的方法给出真机可复现数据（见 `UPSTREAMING.md` 的红线）
+- **状态**：`已定性（已知效率限制，非缺陷）`
+
 ### K-007 · 内存占用偏高 / applet CPU 偶高
 
 - **现象**：COSMIC 全量进程常驻约 **1.7–1.9 GB**；`cosmic-files-applet` CPU 偶发 15–20%

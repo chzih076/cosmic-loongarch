@@ -66,6 +66,7 @@ git clone <本仓库> && cd cosmic-loongarch
 |---|---|---|---|---|---|
 | 0001 | cosmic-comp | 动画开关与速度倍率 | `upstreamable` | 参考 [#376](https://github.com/pop-os/cosmic-comp/issues/376) / PR [#2209](https://github.com/pop-os/cosmic-comp/pull/2209)（未合并）| `animations = (enabled, speed)`；补 `#[serde(default)]`；新增 `src/animations.rs` 全局。配置热生效 |
 | 0002 | cosmic-comp | DMABUF 跨渲染节点纹理导入（花屏）| 待定 | — | 见 `docs/KNOWN-ISSUES.md` K-003（规划中）|
+| 0004 | — | *(K-010 磨砂效率：已知限制，暂不做补丁)* | — | 上游 #2650 / #2795 | 记录见 `docs/KNOWN-ISSUES.md` |
 | 0003 | libcosmic/iced | 表格控件文本缺中文脚本回退（System Monitor 豆腐块）| 待评估 | — | 见 `docs/KNOWN-ISSUES.md` K-009（需 vendoring libcosmic）|
 
 ## 已知问题

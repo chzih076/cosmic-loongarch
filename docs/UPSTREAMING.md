@@ -76,3 +76,22 @@ git apply --3way /path/to/patch      # 观察冲突文件与冲突块数量
 - 用 tag 标记补丁集版本，并与上游 pin 绑定，例如 `v0.1.0+cosmic-364341d`；
 - Release 说明中列出：上游 pin、补丁清单、已验证平台、已知问题链接；
 - **只发布补丁与脚本**，不附带任何上游源码或二进制产物。
+
+## 红线：AI 与上游沟通
+
+**实测教训（2026-10-13）**：上游 issue
+[#2650](https://github.com/pop-os/cosmic-comp/issues/2650) 中，报告者附了一段 LLM 生成的性能分析，
+维护者 Drakulix 的回复是：
+
+> "This is expected currently, we are aware of the limitations and I to be frank
+>  I can ask an LLM myself, if I want half-correct answers."
+
+由此确立本项目与上游打交道的红线：
+
+1. **不把 AI 生成的分析/补丁原样倒给上游**。上游对"半正确的 AI 输出"明确反感，
+   且 PR 模板本就要求作者能完整解释自己的代码。
+2. **可以**用 AI 做本地工作：定位、复现、构建、写补丁、跑验证（本仓库即为此而生）。
+3. **上游沟通只提交**：本人撰写的问题描述 + **本机真实数据**（版本、复现步骤、测量值）+
+   最小复现；结论由维护者判断，不由我们"分析"给结论。
+4. 补丁的分级（`upstreamable` / `loongarch-only` / `local-hack`）不改变上述红线；
+   任何 `upstreamable` 补丁在提交前，作者必须能逐行解释其原理与取舍。
