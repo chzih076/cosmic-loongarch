@@ -31,6 +31,6 @@ cosmic  loongarch  loongarch64  aosc-os  wayland  compositor  systemd-sysext  pa
 ## 其他建议
 
 - **Website**：留空或填 AOSC OS 官网（本仓库与上游无隶属关系，不建议填上游站点）；
-- **Social preview**：可选，放一张 COSMIC 在龙芯上运行的截图（注意截图不包含上游商标争议内容）；
+- **Social preview**：可直接用 `docs/images/cosmic-1.10.0-on-loongarch-aosc.png`（README 同款截图：COSMIC 1.10.0 在 Loongson-3B6000 + AOSC OS 14 上运行）；
 - **About 勾选项**：建议勾选 *Releases*（补丁集发布）、*Issues*；Packages/Deployments 可关；
 - **默认分支**：`main`。

@@ -1,3 +1,11 @@
+## §0 环境证据
+
+![COSMIC 1.10.0 on Loongson-3B6000 + AOSC OS 14](images/cosmic-1.10.0-on-loongarch-aosc.png)
+
+上图为本机（Loongson-3B6000 / AOSC OS 14 / RX 7650 GRE）上 COSMIC 1.10.0 的实际运行画面：
+亮色主题 + `frosted = High2` + 本仓库补丁 0001 的 `speed = 2.0`；
+系统监视器、终端（fastfetch）、COSMIC Player 与 cosmic-edit 均正常。
+
 # 测试与验收（TESTING）
 
 上游 COSMIC 是**两周一个版本**的活跃项目，本仓库又是下游补丁集——所以测试必须**可重复、可记录**。

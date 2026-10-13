@@ -11,6 +11,16 @@
 
 ---
 
+## 截图
+
+![COSMIC 1.10.0 在 LoongArch64 / AOSC OS 上运行](docs/images/cosmic-1.10.0-on-loongarch-aosc.png)
+
+> COSMIC 1.10.0 运行于 **Loongson-3B6000 + AOSC OS 14 + AMD RX 7650 GRE**：亮色主题、磨砂玻璃
+> （`frosted = High2`）、动画 `speed = 2.0`（本仓库补丁 0001）。画面中依次为系统监视器、
+> 终端（含系统信息）、COSMIC Player，以及 cosmic-edit 打开的本仓库 README。
+
+---
+
 ## 这是什么
 
 一个**下游补丁与构建流水线**，让 [COSMIC Desktop](https://github.com/pop-os/cosmic-epoch)（System76 用 Rust 写的桌面环境）在 **LoongArch64 / AOSC OS** 上跑得可用、进而好用。
