@@ -140,8 +140,28 @@
 - **结论（高可信）**：不是缺字体、不是编码，而是 **libcosmic/iced 的表格控件在绘制文本时未走脚本回退**
   （主 UI 文本走正常路径，表格走另一条路径）
 
-- **状态**：`观察中`（已定性：表格文本路径缺回退；候选补丁 0003 = 给 libcosmic 的 table 文本走标准文本管线，
-  但 libcosmic 是 git 依赖，需 vendoring/patch 机制，工程量较大）
+- **定性依据补充（2026-10-13）**：截图里 `Discover □□□□` 的方框数 = `软件中心` 的**字符数（4）**，
+  而不是 `to_string_lossy` 会产生的替换字符数量（12 字节 → 约 4~12 个 U+FFFD 且不整齐）
+  → 说明**数据是正确的**、缺的是**字形**，即该控件路径没有拿到可用的脚本回退 ✔
+
+#### 上游检索结果（2026-10-13）
+
+- **cosmic-monitor 仓库：无相关 issue**（该仓库 issue 极少，只有 #108 Tree Mode、#113 分区拖拽排序）
+- **cosmic-text 里有相关但不完全相同的**：
+  | Issue | 状态 | 与本问题的关系 |
+  |---|---|---|
+  | [#515 Monospace fallback does not work for cjk chars](https://github.com/pop-os/cosmic-text/issues/515) | open | 同为"CJK + 回退"缺陷，但讲的是**等宽宽度不一致**（字形有、宽度错），**不是豆腐块** ✗ |
+  | [#522 Fix Han unification fallback ignoring locales with region](https://github.com/pop-os/cosmic-text/issues/522) | open | 汉字统一化的地区选择 ✔ 相关 |
+  | [#533 建议把字体回退拆成独立 crate](https://github.com/pop-os/cosmic-text/issues/533) | open | 回退机制重构方向 ✔ 相关 |
+  | [#534 fix: non-quadratic font fallback](https://github.com/pop-os/cosmic-text/issues/534) | open | 回退性能修复（PR）✔ 相关 |
+- **结论：K-009 目前没有被上游报告过**，属于可新报一条的问题
+  （报告要点：同一窗口内 UI 文案中文正常、**仅列表单元格**豆腐块；数据为合法 UTF-8；系统中文字体齐全且
+  cosmic-text 的 unix 回退表所列族均已安装 → 指向"该控件路径未走脚本回退"）
+- **注意**：上游对 AI 生成的分析明确反感（见 `UPSTREAMING.md` 红线），
+  故此 issue 若提交，须由本人撰写、只附**本机真机证据与最小复现**，不附 AI 分析结论
+
+- **状态**：`观察中`（已定性：字形缺失、非编码问题；上游无同类 issue，可新报；
+  候选补丁 0003 = 让 libcosmic 的 table 文本走标准文本管线，需 vendoring libcosmic，工程量较大）
 
 ### K-011 · 打开设置时主题回退成暗色（主题配置缺必填字段）
 
