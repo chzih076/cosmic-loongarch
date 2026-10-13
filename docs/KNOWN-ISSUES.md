@@ -190,6 +190,32 @@
     | grep -vE 'dsh-subprocess|bash -c'     # 后者会匹配到自身命令行，必须过滤
   ```
 - **状态**：`已本地修复（明暗两套主题均已补齐）`
+
+#### 另一个可疑诱因：portal 后端是 KDE 的（双会话共享用户级 portal）
+
+- **现象线索**：主题加载会向 `xdg-desktop-portal` 查询对比度设置；本机日志出现过
+  `cosmic::theme::portal > Failed to get the contrast Portal(NotFound("未找到请求的设置"))`
+- **本机实况（2026-10-13）**：用户级 `xdg-desktop-portal` 由 **KDE 会话**启动
+  （`XDG_CURRENT_DESKTOP=KDE`），后端为 `xdg-desktop-portal-kde`；
+  COSMIC 专用后端 `/usr/libexec/xdg-desktop-portal-cosmic` **已安装但未运行**
+  → 由于用户级 portal 跨会话共享，**COSMIC 应用拿到的是 KDE 后端** ✗
+- **上游同类反馈**：
+  - [cosmic-launcher #424](https://github.com/pop-os/cosmic-launcher/issues/424)
+    `error loading system dark theme`（评论里有人定位到 portal 未运行）
+  - [cosmic-applets #1555](https://github.com/pop-os/cosmic-applets/issues/1555)（标题含 `list_button`）
+  - [cosmic-settings #2152](https://github.com/pop-os/cosmic-settings/issues/2152)（Dark palette 缺键）
+  - [cosmic-epoch #3712](https://github.com/pop-os/cosmic-epoch/issues/3712)（切换主题报错）
+- **后手方案（只改 Settings 接口，对 KDE 影响最小；已验证可行性：
+  `cosmic.portal` 声明 `UseIn=COSMIC` 且 `org.freedesktop.impl.portal.desktop.cosmic.service` 可 DBus 激活）**：
+  ```bash
+  mkdir -p ~/.config/xdg-desktop-portal
+  cat > ~/.config/xdg-desktop-portal/portals.conf <<'CONF'
+  [preferred]
+  org.freedesktop.impl.portal.Settings=cosmic;gtk
+  CONF
+  systemctl --user restart xdg-desktop-portal
+  ```
+- **状态**：`待复测`（先验证补键是否已解决；若仍概率性变暗再上 portal 后手）
 ### K-010 · 磨砂玻璃的效率成本（不是 bug，上游已知的预期限制）
 
 - **现象**：开启磨砂玻璃后，请求模糊的窗口**内部元素**一有动作（滚动、进度动画、列表刷新等），
