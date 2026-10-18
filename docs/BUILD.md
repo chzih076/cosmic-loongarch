@@ -35,7 +35,7 @@
 | `10-fetch.sh` | 按 `upstream.lock` 获取上游：缺失则克隆，存在则**只校验**（不联网）；`--update` 才增量 fetch 并切到 lock 的 commit | `--check`（仅校验）、`--update`、`--lock`（由现有树重新生成 lock）|
 | `20-apply.sh` | 对每个仓库应用 `patches/<repo>/*.patch` | `--check` 预演、`--list` 列出、`--revert` 撤销（`git checkout -- .`）|
 | `30-build.sh` | `just sysext`（含全部环境变量与缓存设置）；完成后校验产物 | `--jobs N`、`--slim`（清理各 target/ 释放约 37 GB）|
-| `40-sysext.sh` | 定位并校验 `cosmic-sysext/`（元数据 + 离线 `systemd-sysext --root` 校验），输出路径与校验和 | 只读检查 |
+| `40-package.sh` | 定位并校验 `cosmic-sysext/`（元数据 + 离线 `systemd-sysext --root` 校验），输出路径与校验和 | 只读检查 |
 | `50-install.sh` | 复制到 `/var/lib/extensions/` 并 `systemctl start systemd-sysext`（**不改系统文件**）| `--yes` |
 | `60-verify.sh` | 冒烟验证：扩展已合并、会话文件、关键二进制与动态库、协议字符串、输入法协议 | `--rebind-ime` 重绑 fcitx5；`--report` 输出报告 |
 | `99-uninstall.sh` | 停止并移除扩展；必要时重启登录管理器 | `--yes` |

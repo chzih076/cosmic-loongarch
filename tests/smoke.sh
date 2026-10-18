@@ -29,6 +29,11 @@ chk "构建树 commit 与 lock 一致" "[ \"\$(git -C '$BUILD_DIR' rev-parse HEA
 chk "构建树状态可接受（干净，或已记录补丁）" "\
   [ -z \"\$(git -C '$BUILD_DIR' status --porcelain --untracked-files=no)\" ] \
   || { [ -s '$REPO_ROOT/state/patches-applied.txt' ] && [ -f '$REPO_ROOT/patches/cosmic-comp/0001-animations-enabled-and-speed.patch' ]; }"
+chk "原生包已安装（cosmic-settings）" "dpkg -l cosmic-settings 2>/dev/null | grep -q '^ii'"
+chk "已安装版本为 1.10.x" "dpkg -l cosmic-settings 2>/dev/null | awk '/^ii/{print \$3}' | grep -qE '^1\\.10\\.'"
+chk "无 systemd-sysext 叠加层" "! systemd-sysext status 2>/dev/null | grep -q cosmic"
+chk "cosmic-comp 含动画补丁特征" "strings -a /usr/bin/cosmic-comp 2>/dev/null | grep -q 'animations: enabled'"
+chk "cosmic-settings 含磨砂 UI" "strings -a /usr/bin/cosmic-settings 2>/dev/null | grep -qi 'frosted.thickness'"
 chk "sysext 产物存在" "[ -d '$BUILD_DIR/cosmic-sysext' ]"
 chk "扩展元数据存在" "[ -f '$BUILD_DIR/cosmic-sysext/usr/lib/extension-release.d/extension-release.cosmic-sysext' ]"
 chk "关键二进制存在" "[ -x '$BUILD_DIR/cosmic-sysext/usr/bin/cosmic-comp' ]"

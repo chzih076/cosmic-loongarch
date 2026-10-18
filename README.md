@@ -5,7 +5,7 @@
 面向 AOSC OS / LoongArch64：
 ① 构建修复：libseat 的 pkg-config 路径、libjpeg-turbo 不支持 loongarch64；
 ② 运行改进：动画开关与速度倍率（#376）、renderD128 跨节点纹理花屏、环境串味、fcitx5 重绑；
-③ 工程化：upstream.lock 锁定 cosmic-epoch 与 30 子模块 SHA；00-deps→60-verify 幂等流水线（打补丁/构建/打包 sysext/冒烟/回滚）。
+③ 工程化：upstream.lock 锁定 cosmic-epoch 与 30 子模块 SHA；00-deps→60-verify 幂等流水线（打补丁/构建/打包原生 .deb/冒烟/回滚）。
 
 补丁分 upstreamable / loongarch-only / local-hack 三级，注明动机与上游 issue。已在 Loongson-3B6000 + AOSC OS 14 + RX 7650 GRE 验证，不影响 KDE、随时可摘。
 
@@ -36,7 +36,7 @@
 ```
 upstream.lock              锁定 cosmic-epoch 与全部子模块的精确 commit（可复现构建的根）
 patches/                   本仓库的"产品"：按上游仓库分目录，三级分类，逐条注明动机与证据
-scripts/                   00-deps → 10-fetch → 20-apply → 30-build → 40-sysext → 50-install → 60-verify → 99-uninstall
+scripts/                   00-deps → 10-fetch → 20-apply → 30-build → 40-package → 50-install → 60-verify → 99-uninstall
 docs/                      BUILD / TESTING / KNOWN-ISSUES / PERFORMANCE / UPSTREAMING / REPO-METADATA
 tests/                     smoke.sh（自动冒烟）+ manual-checklist.md（人工验收清单）
 state/                     本机状态记录（已应用补丁、已装 sysext 版本、上次构建的上游 SHA）
@@ -51,13 +51,31 @@ git clone <本仓库> && cd cosmic-loongarch
 ./scripts/10-fetch.sh         # 按 upstream.lock 获取上游源码到你指定的构建目录
 ./scripts/20-apply.sh         # 应用补丁（幂等；--check 只预演，--revert 撤销）
 ./scripts/30-build.sh         # 构建（sccache + 并发控制 + loongarch64 必要环境变量）
-./scripts/40-sysext.sh        # 打包 systemd-sysext 并做离线校验
-./scripts/50-install.sh       # 安装并启用（systemd-sysext，随时可回滚）
+./scripts/40-package.sh       # 打成本地 .deb（包名沿用发行版，版本 = 上游 epoch 版本）
+./scripts/50-install.sh       # dpkg -i 升级安装（/usr 保持可写，包管理器可用）
 ./scripts/60-verify.sh        # 冒烟验证
 ./scripts/99-uninstall.sh     # 一键回滚到原桌面
 ```
 
 构建目录、镜像/代理等均可通过环境变量覆盖，见 `docs/BUILD.md`。
+
+## 原生包安装（推荐方式）
+
+COSMIC 官方每 ~2 周发布一个 epoch（当前 `epoch-1.10.0`）。本项目的推荐做法是把构建产物
+**打成本地 .deb**，包名沿用发行版的 `cosmic-*`，版本用上游 epoch 版本 —— `dpkg` 会把它当作
+**升级**处理，因此 `/usr` 保持可写、`oma`/`dpkg` 等包管理器继续正常工作（systemd-sysext
+方式会让 `/usr` 变成只读叠加层，导致无法安装软件，已废弃）。
+
+```bash
+./scripts/40-package.sh --version 1.10.0   # 产出 out/debs/*.deb
+sudo ./scripts/50-install.sh               # 预检 + dpkg -i + 刷新缓存
+./scripts/60-verify.sh                     # 版本/二进制/补丁/可写性全部核对
+sudo ./scripts/99-uninstall.sh             # 需要时降级回发行版自带版本
+```
+
+> ⚠️ **版本号陷阱**：发行版（AOSC）仓库里的 COSMIC 是 **epoch 1.0.x**，包版本显示为
+> `1.0.12`/`1.0.14`（这是 crate 版本号，不是 epoch 1.10）。所以本地包用 `1.10.0` 作为版本
+> 即可正确"升级"覆盖它们。详见 [`docs/NATIVE-PACKAGING.md`](docs/NATIVE-PACKAGING.md)。
 
 ## 设计原则
 
@@ -67,7 +85,7 @@ git clone <本仓库> && cd cosmic-loongarch
 | **锁死上游** | `upstream.lock` 记录 cosmic-epoch 与 30 个子模块的精确 commit，构建可复现 |
 | **幂等脚本** | 每个脚本可重复执行；`10-fetch.sh` 默认**不联网**（仅校验 lock），只有 `--update` 才增量拉取 |
 | **补丁分级** | `upstreamable` / `loongarch-only` / `local-hack`，每条标注动机、上游 issue 与测试证据、回退条件 |
-| **零风险试用** | 用 systemd-sysext 安装，不替换系统文件；`99-uninstall.sh` 一键摘除 |
+| **可逆安装** | 打成本地 .deb 并以「同名包升级」方式安装（`/usr` 可写、`oma`/`dpkg` 正常）；`99-uninstall.sh` 可降级回发行版 |
 | **可验证** | 改动都要有证据：journal / coredumpctl 栈 / 设备号解码 / 性能数字，写进补丁说明 |
 
 ## 补丁清单
@@ -90,7 +108,7 @@ git clone <本仓库> && cd cosmic-loongarch
 | CPU / 架构 | Loongson-3B6000 (12C/24T @2.2GHz) / loongarch64 |
 | 系统 | AOSC OS 14.0.0，内核 7.1.13，systemd |
 | 显卡 / 驱动 | AMD RX 7650 GRE（RADV / Mesa 26.1.5）|
-| 会话 | KDE Plasma (Wayland) 并存；COSMIC 以 systemd-sysext 方式启用 |
+| 会话 | KDE Plasma (Wayland) 并存；COSMIC 以原生 .deb（同名包升级）方式安装 |
 | 输入法 | fcitx5 + RIME（cosmic-comp 支持 `zwp_input_method_v2`）|
 
 ## 署名与贡献

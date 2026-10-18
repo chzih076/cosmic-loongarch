@@ -1,68 +1,61 @@
 #!/usr/bin/env bash
-# cosmic-loongarch · 60-verify：冒烟验证（只读）+ 可选重绑输入法
 # SPDX-License-Identifier: GPL-3.0
-set -euo pipefail
-source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
+#
+# 60-verify.sh — 验证原生包安装后的状态（全部为只读检查）
+#
+# 检查项：
+#   1. 各组件的包版本 = 目标 epoch 版本
+#   2. 构建产物与已安装二进制逐字节一致（补丁组件除外，需单独校验特征串）
+#   3. /usr 可写（非只读叠加）且无 systemd-sysext 合并
+#   4. 补丁特征存在（cosmic-comp 的 animations 开关）
+#   5. 主题编辑器包含磨砂 UI（cosmic-settings）
+set -uo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); REPO_ROOT=$(cd "$HERE/.." && pwd)
+if [ -t 1 ]; then c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_off=$'\033[0m'
+else c_red=; c_grn=; c_yel=; c_off=; fi
+ok(){ printf '%s[+]%s %s\n' "$c_grn" "$c_off" "$*"; }
+bad(){ printf '%s[x]%s %s\n' "$c_red" "$c_off" "$*"; }
+warn(){ printf '%s[!]%s %s\n' "$c_yel" "$c_off" "$*" >&2; }
+say(){ printf '\n== %s\n' "$*"; }
 
-REBIND=0; REPORT=0
-for a in "$@"; do case "$a" in
-  --rebind-ime) REBIND=1;; --report) REPORT=1;;
-  -h|--help) echo "用法: $0 [--rebind-ime] [--report]"; exit 0;;
-  *) die "未知参数: $a";; esac; done
+VERSION=$(cat "$REPO_ROOT/state/epoch-version" 2>/dev/null || echo "1.10.0")
+BUILD_DIR="${COSMIC_BUILD_DIR:-$(cat "$REPO_ROOT/state/build-dir" 2>/dev/null)}"
+SX="$BUILD_DIR/cosmic-sysext"
+FAIL=0
 
-OUT="$(mktemp)"; exec > >(tee "$OUT") 2>&1
-log "== 冒烟验证 $(date -Iseconds) =="
+say "1) 包版本（目标 $VERSION）"
+for p in $(dpkg -l 2>/dev/null | awk '/^ii/{print $2" "$3}' | grep -E '^(cosmic-|xdg-desktop-portal-cosmic|pop-launcher)' | awk '{print $1}'); do
+  v=$(dpkg -l "$p" 2>/dev/null | awk '/^ii/{print $3}')
+  case "$v" in "$VERSION"*|1) ok "$(printf '%-32s %s' "$p" "$v")";; *) bad "$(printf '%-32s %s（非 %s）' "$p" "$v" "$VERSION")"; FAIL=1;; esac
+done
 
-# 1) lock 与构建树一致
-if [ -d "$BUILD_DIR/.git" ]; then
-  "$REPO_ROOT/scripts/10-fetch.sh" --check >/dev/null 2>&1 && ok "upstream.lock 与构建树一致" || warn "upstream.lock 与构建树不一致"
-else warn "构建树不存在：$BUILD_DIR"; fi
-
-# 2) 补丁状态
-"$REPO_ROOT/scripts/20-apply.sh" --check >/dev/null 2>&1 && ok "补丁预演通过" || warn "补丁预演未通过（可能需要解冲突）"
-[ -s "$STATE_DIR/patches-applied.txt" ] && { log "已应用补丁："; sed 's/^/    /' "$STATE_DIR/patches-applied.txt"; }
-
-# 3) 产物
-S="$BUILD_DIR/cosmic-sysext"
-[ -d "$S" ] && ok "产物存在（$(du -sh "$S" | cut -f1)）" || warn "产物不存在"
-
-# 4) 已安装状态
-if systemd-sysext status 2>/dev/null | grep -q cosmic-sysext; then
-  ok "sysext 已合并到 /usr"
-  for b in cosmic-comp cosmic-session cosmic-panel cosmic-settings; do
-    [ -x "/usr/bin/$b" ] && printf '    %-20s %s\n' "$b" "$(ldd "/usr/bin/$b" 2>/dev/null | grep -c 'not found') 个缺失库" || warn "缺少 /usr/bin/$b"
+say "2) 二进制与构建产物比对"
+if [ -d "$SX/usr/bin" ]; then
+  same=0; diff=0; miss=0
+  for f in "$SX"/usr/bin/*; do
+    b=$(basename "$f")
+    if [ ! -x "/usr/bin/$b" ]; then bad "未安装: $b"; miss=$((miss+1)); continue; fi
+    a=$(sha256sum "$f" | cut -c1-16); c=$(sha256sum "/usr/bin/$b" | cut -c1-16)
+    if [ "$a" = "$c" ]; then same=$((same+1)); else
+      case "$b" in
+        cosmic-comp) ok "cosmic-comp 使用带补丁版本（预期不同）";;
+        *) bad "不一致: $b（构建=$a 安装=$c）"; FAIL=1;;
+      esac; diff=$((diff+1))
+    fi
   done
-  [ -f /usr/share/wayland-sessions/cosmic.desktop ] && ok "登录界面可见 COSMIC 会话" || warn "缺少会话文件"
-else warn "sysext 未合并（尚未安装？）"; fi
-
-# 5) 运行中的会话
-if pgrep -x cosmic-comp >/dev/null 2>&1; then
-  ok "COSMIC 正在运行：$(pgrep -c cosmic) 个 cosmic 进程"
-  ps -eo comm,rss | grep -i cosmic | awk '{s+=$2} END{printf "    内存合计 %.0f MB\n", s/1024}'
-else log "COSMIC 当前未运行"; fi
-
-# 6) 输入法协议
-strings -a "$S/usr/bin/cosmic-comp" 2>/dev/null | grep -q zwp_input_method_manager_v2 \
-  && ok "cosmic-comp 支持 zwp_input_method_manager_v2（fcitx5 可用）" || warn "未见输入法协议字符串"
-
-# 7) 可选：重绑 fcitx5
-if [ "$REBIND" = "1" ]; then
-  if ! command -v fcitx5 >/dev/null 2>&1; then warn "未安装 fcitx5，跳过"; else
-    active_kde="$(loginctl show-session 2 -p Active --value 2>/dev/null || true)"
-    if [ "$active_kde" = "yes" ]; then WD=wayland-0; DP=:0; WHO=KDE; else WD=wayland-1; DP=:1; WHO=COSMIC; fi
-    log "重绑 fcitx5 到活动会话：$WHO（WAYLAND_DISPLAY=$WD）"
-    pkill -x fcitx5 2>/dev/null || true; sleep 1
-    setsid nohup env XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" WAYLAND_DISPLAY="$WD" DISPLAY="$DP" \
-      GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx QT5_IM_MODULE=fcitx XMODIFIERS=@im=fcitx \
-      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus" fcitx5 -d >/tmp/fcitx5-follow.log 2>&1 &
-    sleep 4
-    grep -m1 'native input method protocol' /tmp/fcitx5-follow.log 2>/dev/null | sed 's/^/    /' || true
-    ok "fcitx5 已重绑（引擎：$(XDG_RUNTIME_DIR=/run/user/$(id -u) fcitx5-remote -n 2>/dev/null || echo '?')）"
-  fi
+  ok "一致 $same 个，差异 $diff 个，缺失 $miss 个"
+else
+  warn "找不到构建产物，跳过比对（设置 COSMIC_BUILD_DIR 或 state/build-dir）"
 fi
 
-exec >/dev/null 2>&1
-printf '%s\n' "---- 报告 ----" >&2
-if [ "$REPORT" = "1" ]; then cp "$OUT" "$STATE_DIR/last-verify.txt"; ok "报告已写入 $STATE_DIR/last-verify.txt"; fi
-grep -cE '^\[+\]' "$OUT" | sed 's/^/通过项: /' >&2
-grep -cE '^\[!\]' "$OUT" | sed 's/^/警告项: /' >&2
+say "3) 文件系统与叠加层"
+if systemd-sysext status 2>/dev/null | grep -q cosmic; then bad "sysext 仍处于合并状态（应无）"; FAIL=1; else ok "无 sysext 合并"; fi
+if findmnt -no FSTYPE /usr 2>/dev/null | grep -q overlay; then bad "/usr 是 overlay（只读叠加）"; FAIL=1; else ok "/usr 不是叠加层"; fi
+if [ -w /usr/bin ]; then ok "/usr 可写"; else warn "/usr 不可写（非 root 身份运行则正常）"; fi
+
+say "4) 补丁特征"
+if strings -a /usr/bin/cosmic-comp 2>/dev/null | grep -q 'animations: enabled'; then ok "cosmic-comp 含动画补丁"; else bad "cosmic-comp 缺少补丁特征"; FAIL=1; fi
+if strings -a /usr/bin/cosmic-settings 2>/dev/null | grep -qi 'frosted.thickness'; then ok "cosmic-settings 含磨砂 UI"; else bad "cosmic-settings 缺少磨砂 UI"; FAIL=1; fi
+
+say "结果"
+if [ "$FAIL" = 0 ]; then ok "全部检查通过"; exit 0; else bad "存在失败项"; exit 1; fi

@@ -2,6 +2,35 @@
 
 本仓库只分发**补丁与脚本**，版本以「Iteration」划分；每个补丁的动机、分级、证据见 `patches/` 与 `docs/KNOWN-ISSUES.md`。
 
+## Iteration 2 — 2026-10-19
+
+### 安装方式：systemd-sysext → 原生 .deb
+
+实测发现 AOSC 仓库中的 COSMIC 为 **epoch 1.0.x**（包版本 `1.0.14` 是 crate 版本，不是 epoch 1.10），
+systemd-sysext 方案会让 `/usr` 变成只读叠加层、`oma install` 全部失败（"只读文件系统"）。
+改为把构建产物打成**同名本地包**（`cosmic-*`，版本 `1.10.0`），`dpkg` 以升级方式安装：
+
+- `scripts/40-package.sh`（新，替代 `40-sysext.sh`）：按组件拆包；带补丁的二进制自动覆盖；
+  图标/壁纸/额外桌面条目/launcher 插件并集合并；**不镜像**发行版的 doc/license（曾一次写出 62 GB）
+- `scripts/50-install.sh`：`dpkg --dry-run` 预检 → `dpkg -i` → 图标/桌面缓存刷新
+- `scripts/60-verify.sh`：包版本、构建产物逐字节比对（补丁组件查特征串）、`/usr` 可写性、无 sysext
+- `scripts/99-uninstall.sh`：`--allow-downgrades` 重装回发行版版本
+- `state/{epoch-version,build-dir}` 记录目标版本与构建目录
+
+### 验证结果（LoongArch / AOSC OS 14）
+
+- 37 个包全部 `1.10.x`；47/47 构建产物二进制已安装，46 个逐字节一致
+- `cosmic-comp` = `1.10.0+cosmic-loongarch1`（含 0001 补丁；`strings` 特征串校验）
+- 外观 → 样式页出现磨砂设置（1.10 才有的 UI）；主题/图标/壁纸均为 1.10 资源
+- `/usr` 可写、`oma`/`dpkg` 正常
+
+### 问题记录
+
+| 编号 | 内容 | 结果 |
+|---|---|---|
+| K-013 | 发行版包版本号 `1.0.14` ≠ epoch 1.10（版本号陷阱）| 用「同名包 + 更高版本」规避，见 `docs/NATIVE-PACKAGING.md` |
+| K-014 | 升级包若缺少旧包内的文件（如 applet 二进制、桌面条目），dpkg 会删除它们 | 40-package.sh 按组件收集二进制 + 白名单数据，并对 pop-launcher 插件做并集 |
+
 ## Iteration 1 — 2026-10-13
 
 ### 新增补丁
