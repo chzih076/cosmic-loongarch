@@ -88,6 +88,8 @@ say "1) 二进制"
 for f in "$SX"/usr/bin/*; do
     [ -f "$f" ] || continue
     b=$(basename "$f"); pkg=""
+    # pop-launcher 有专门处理（含插件并集），跳过通用映射避免重复打包
+    [ "$b" = "pop-launcher" ] && continue
     for p in "${!BINS[@]}"; do
         for x in ${BINS[$p]}; do [ "$x" = "$b" ] && { pkg=$p; break 2; }; done
     done

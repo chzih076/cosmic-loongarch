@@ -7,7 +7,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOCK_FILE="$REPO_ROOT/upstream.lock"
 PATCHES_DIR="$REPO_ROOT/patches"
 STATE_DIR="$REPO_ROOT/state"
-BUILD_DIR="${COSMIC_BUILD_DIR:-$HOME/cosmic-build}"
+# 构建目录优先级：环境变量 > state/build-dir > 默认值
+# （state/build-dir 由 scripts 写入，例如 /run/media/lik/git/cosmic-epoch）
+if [ -n "${COSMIC_BUILD_DIR:-}" ]; then
+    BUILD_DIR="$COSMIC_BUILD_DIR"
+elif [ -f "$STATE_DIR/build-dir" ]; then
+    BUILD_DIR="$(cat "$STATE_DIR/build-dir")"
+else
+    BUILD_DIR="$HOME/cosmic-build"
+fi
 BUILD_LOG="${BUILD_LOG:-$BUILD_DIR/build.log}"
 
 if [ -t 1 ]; then c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_blu=$'\033[36m'; c_off=$'\033[0m'

@@ -2,6 +2,29 @@
 
 本仓库只分发**补丁与脚本**，版本以「Iteration」划分；每个补丁的动机、分级、证据见 `patches/` 与 `docs/KNOWN-ISSUES.md`。
 
+## Iteration 3 — 2026-11-05
+
+### 跟进上游 epoch-1.11.0
+
+- `upstream.lock` 更新到 **epoch-1.11.0**（2026-10-20 发布；epoch commit `e98f8289a`，30 个子模块）
+- 补丁 0001 重新生成以适配 cosmic-comp `8cb1802c`：
+  · 上游 1.11 新增「窗口抖动」动画（`SHAKE_ANIMATION_DURATION` / `SHAKE_AMPLITUDE`），
+    与我们把时长常量改成 `speed` 缩放函数的改动冲突；解决方式为保留函数 + 抖动时长同样受 `speed` 影响
+  · 补丁 2246 行，`cargo check` 通过
+- 全量重建（libcosmic 更新触发，6000+ crates），0 错误
+- `scripts/lib/common.sh`：构建目录优先级修正为「环境变量 → `state/build-dir` → 默认值」
+- `scripts/40-package.sh`：通用二进制循环跳过 `pop-launcher`（避免与会话包重复打包导致 dpkg 冲突）
+
+### 验证
+
+- 31 个包全部 `1.11.x`；47/47 构建产物二进制已安装
+- `cosmic-comp` = `1.11.0`（含 0001 补丁，特征串校验通过）；外观样式页磨砂设置仍在
+
+### 上游状态
+
+- #2209（动画开关）仍 open（2026-07-29 后无更新）→ 补丁继续维护
+- 1.11.0 主要变化：libcosmic Esc 处理、app-library 下键选首项与独显修复、applets 关闭按钮与滚轮音量修复、cosmic-comp `xdg-dialog-v1`
+
 ## Iteration 2 — 2026-10-19
 
 ### 安装方式：systemd-sysext → 原生 .deb

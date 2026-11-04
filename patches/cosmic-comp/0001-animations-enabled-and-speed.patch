@@ -1,15 +1,13 @@
-Upstream: pop-os/cosmic-comp@41497b42d9744d9963c4c6d17e8add49489b45ee
-Grade: upstreamable
-Issue: https://github.com/pop-os/cosmic-comp/issues/376
-Related: https://github.com/pop-os/cosmic-comp/pull/2209
-Evidence: |
-  · 编译：cargo build --release 通过（cosmic-comp v1.0.0，Finished release profile）
-  · 配置：~/.config/cosmic/com.system76.CosmicComp/v1/animations = (enabled: true, speed: 2.0)
-          启动日志出现 "animations: enabled=true speed=2.00"（src/animations.rs 的 tracing::info!）
-  · 变更范围：13 文件；其中 src/animations.rs 为新增（进程内全局：enabled 门控 + speed 倍率）
-  · 与上游 PR #2209 的关系：采用其“跳过动画而非零时长动画”的状态机语义（已获维护者认可），
-    并补上其缺失的 #[serde(default)]（上游 2026-09 为同类问题立规：缺字段会重置用户配置），
-    同时新增 speed 时长倍率（社区在 #376 中反复要求 float 滑块）。
+# cosmic-loongarch · cosmic-comp · 0001 animations-enabled-and-speed
+#
+# 补丁内容：
+#   · CosmicCompConfig 新增 `animations: (enabled: bool, speed: f32)`，带 #[serde(default)]
+#   · 新增 src/animations.rs 全局状态（AtomicBool/AtomicU32），提供 enabled()/scale()/speed()
+#   · 把各处 const 动画时长改为受 speed 缩放的函数
+#   · 上游 PR: pop-os/cosmic-comp#2209（未合并，故本地维护）
+#
+# 适用上游：epoch-1.11.0（cosmic-comp 8cb1802c）
+# 生成：2026-11-04
 diff --git a/.gitignore b/.gitignore
 index 93276fce..3cf9e843 100644
 --- a/.gitignore
@@ -206,7 +204,7 @@ index 9ad61588..0ebddfab 100644
                  let current_focus = (!move_active && is_active_space)
                      .then_some(last_active_seat)
 diff --git a/src/config/mod.rs b/src/config/mod.rs
-index 9bdef7c1..d8e390a6 100644
+index be509e72..67660427 100644
 --- a/src/config/mod.rs
 +++ b/src/config/mod.rs
 @@ -49,8 +49,9 @@ mod types;
@@ -231,7 +229,7 @@ index 9bdef7c1..d8e390a6 100644
          // `cursor_hide_timeout` was replaced by the grouped `cursor_hide` key.
          // Seed the new key once so configs hand-edited before the rename keep
          // working; the old file is left in place so a downgrade still reads it.
-@@ -982,6 +986,18 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut
+@@ -983,6 +987,18 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut
                      state.common.config.cosmic_conf.edge_snap_threshold = new;
                  }
              }
@@ -304,10 +302,10 @@ index c7e799be..af1ece6b 100644
          match &self.element {
              CosmicMappedInternal::Window(w) => w.force_redraw(),
 diff --git a/src/shell/element/stack.rs b/src/shell/element/stack.rs
-index f4a37bfe..0c2a41f7 100644
+index faa872a6..d0b1a8db 100644
 --- a/src/shell/element/stack.rs
 +++ b/src/shell/element/stack.rs
-@@ -115,6 +115,7 @@ pub struct CosmicStackInternal {
+@@ -116,6 +116,7 @@ pub struct CosmicStackInternal {
      windows: Mutex<Vec<CosmicSurface>>,
      active: AtomicUsize,
      activated: AtomicBool,
@@ -315,7 +313,7 @@ index f4a37bfe..0c2a41f7 100644
      group_focused: AtomicBool,
      previous_index: Mutex<Option<(Serial, usize)>>,
      scroll_to_focus: AtomicBool,
-@@ -158,6 +159,7 @@ impl CosmicStack {
+@@ -159,6 +160,7 @@ impl CosmicStack {
          handle: LoopHandle<'static, crate::state::State>,
          mut theme: cosmic::Theme,
          appearance: AppearanceConfig,
@@ -323,7 +321,7 @@ index f4a37bfe..0c2a41f7 100644
      ) -> CosmicStack {
          theme.transparent = theme.cosmic().frosted_windows;
          let windows = windows.map(Into::into).collect::<Vec<_>>();
-@@ -175,6 +177,7 @@ impl CosmicStack {
+@@ -176,6 +178,7 @@ impl CosmicStack {
                  windows: Mutex::new(windows),
                  active: AtomicUsize::new(0),
                  activated: AtomicBool::new(false),
@@ -331,7 +329,7 @@ index f4a37bfe..0c2a41f7 100644
                  group_focused: AtomicBool::new(false),
                  previous_index: Mutex::new(None),
                  scroll_to_focus: AtomicBool::new(false),
-@@ -892,6 +895,16 @@ impl CosmicStack {
+@@ -893,6 +896,16 @@ impl CosmicStack {
          }
      }
  
@@ -348,7 +346,7 @@ index f4a37bfe..0c2a41f7 100644
      pub(crate) fn force_redraw(&self) {
          self.0.force_redraw();
      }
-@@ -1347,6 +1360,7 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
+@@ -1350,6 +1363,7 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
                      active,
                      windows[active].is_activated(false),
                      group_focused,
@@ -578,7 +576,7 @@ index 937fa311..533da167 100644
                  ),
                  WorkspaceDelta::Gesture {
 diff --git a/src/shell/grabs/moving.rs b/src/shell/grabs/moving.rs
-index f1fbfa8a..9580f2b1 100644
+index d8b2dde9..ae7b14fc 100644
 --- a/src/shell/grabs/moving.rs
 +++ b/src/shell/grabs/moving.rs
 @@ -66,7 +66,10 @@ use super::{GrabStartData, ReleaseMode};
@@ -603,10 +601,10 @@ index f1fbfa8a..9580f2b1 100644
                  * 0.4)
          } else {
 diff --git a/src/shell/layout/floating/mod.rs b/src/shell/layout/floating/mod.rs
-index 95d7264d..2ae10d37 100644
+index da544454..994e154b 100644
 --- a/src/shell/layout/floating/mod.rs
 +++ b/src/shell/layout/floating/mod.rs
-@@ -49,8 +49,14 @@ use crate::{
+@@ -52,8 +52,15 @@ use crate::{
  mod grabs;
  pub use self::grabs::*;
  
@@ -620,10 +618,11 @@ index 95d7264d..2ae10d37 100644
 +pub fn minimize_animation_duration() -> Duration {
 +    crate::animations::scale(Duration::from_millis(320))
 +}
++/// 窗口抖动动画（上游 1.11 新增；时长同样受 speed 影响）
+ const SHAKE_ANIMATION_DURATION: Duration = Duration::from_millis(320);
+ const SHAKE_AMPLITUDE: f32 = 10.0;
  
- #[derive(Debug, Default)]
- pub struct FloatingLayout {
-@@ -58,6 +64,7 @@ pub struct FloatingLayout {
+@@ -63,6 +70,7 @@ pub struct FloatingLayout {
      last_output_size: Size<i32, Local>,
      spawn_order: Vec<CosmicMapped>,
      animations: HashMap<CosmicMapped, Animation>,
@@ -631,7 +630,7 @@ index 95d7264d..2ae10d37 100644
      hovered_stack: Option<(CosmicMapped, Rectangle<i32, Local>)>,
      dirty: AtomicBool,
      pub theme: cosmic::Theme,
-@@ -97,17 +104,17 @@ impl Animation {
+@@ -107,17 +115,17 @@ impl Animation {
              Animation::Minimize { start, .. } => {
                  let percentage = Instant::now()
                      .duration_since(*start)
@@ -653,7 +652,7 @@ index 95d7264d..2ae10d37 100644
                  (percentage * 2.0).min(1.0)
              }
          }
-@@ -140,7 +147,7 @@ impl Animation {
+@@ -166,7 +174,7 @@ impl Animation {
              }
              | Animation::Unminimize {
                  target_geometry, ..
@@ -662,7 +661,7 @@ index 95d7264d..2ae10d37 100644
              Animation::Tiled { .. } => {
                  let target_geometry = if let Some(target_rect) =
                      tiled_state.map(|state| state.relative_geometry(output_geometry, gaps))
-@@ -149,7 +156,7 @@ impl Animation {
+@@ -175,7 +183,7 @@ impl Animation {
                  } else {
                      current_geometry
                  };
@@ -671,7 +670,7 @@ index 95d7264d..2ae10d37 100644
              }
          };
          let previous_rect = *self.previous_geometry();
-@@ -269,11 +276,13 @@ impl FloatingLayout {
+@@ -295,11 +303,13 @@ impl FloatingLayout {
      pub fn new(
          theme: cosmic::Theme,
          appearance: AppearanceConfig,
@@ -685,7 +684,7 @@ index 95d7264d..2ae10d37 100644
              appearance,
              ..Default::default()
          };
-@@ -281,6 +290,10 @@ impl FloatingLayout {
+@@ -307,6 +317,10 @@ impl FloatingLayout {
          layout
      }
  
@@ -696,7 +695,7 @@ index 95d7264d..2ae10d37 100644
      pub fn set_output(&mut self, output: &Output) {
          let old_output = self.space.outputs().next().unwrap().clone();
          self.space.unmap_output(&old_output);
-@@ -371,7 +384,7 @@ impl FloatingLayout {
+@@ -401,7 +415,7 @@ impl FloatingLayout {
  
          mapped.moved_since_mapped.store(true, Ordering::SeqCst);
  
@@ -705,7 +704,7 @@ index 95d7264d..2ae10d37 100644
              if let Some(existing_anim) = self.animations.get_mut(&mapped) {
                  match existing_anim {
                      Animation::Unminimize {
-@@ -609,13 +622,15 @@ impl FloatingLayout {
+@@ -655,13 +669,15 @@ impl FloatingLayout {
          mapped.configure();
  
          if let Some(previous_geometry) = prev.or(already_mapped) {
@@ -728,7 +727,7 @@ index 95d7264d..2ae10d37 100644
          }
          self.space.map_element(mapped, position.as_logical(), false);
          self.space.refresh();
-@@ -652,14 +667,16 @@ impl FloatingLayout {
+@@ -698,14 +714,16 @@ impl FloatingLayout {
          self.space.refresh();
          let target_geometry = self.space.element_geometry(&mapped).unwrap().as_local();
  
@@ -753,7 +752,7 @@ index 95d7264d..2ae10d37 100644
      }
  
      pub fn unmap(
-@@ -670,7 +687,9 @@ impl FloatingLayout {
+@@ -716,7 +734,9 @@ impl FloatingLayout {
          let mut mapped_geometry = self.space.element_geometry(window).map(RectExt::as_local)?;
          let _ = self.animations.remove(window);
  
@@ -764,7 +763,7 @@ index 95d7264d..2ae10d37 100644
              self.animations.insert(
                  window.clone(),
                  Animation::Minimize {
-@@ -1048,6 +1067,7 @@ impl FloatingLayout {
+@@ -1094,6 +1114,7 @@ impl FloatingLayout {
                  (&output, mapped.bbox()),
                  self.theme.clone(),
                  self.appearance,
@@ -772,13 +771,15 @@ index 95d7264d..2ae10d37 100644
              );
              self.map_internal(
                  mapped.clone(),
-@@ -1416,8 +1436,8 @@ impl FloatingLayout {
+@@ -1462,9 +1483,9 @@ impl FloatingLayout {
          let was_empty = self.animations.is_empty();
          self.animations.retain(|_, anim| {
              let duration = match anim {
 -                Animation::Tiled { .. } => ANIMATION_DURATION,
+-                Animation::Shake { .. } => SHAKE_ANIMATION_DURATION,
 -                _ => MINIMIZE_ANIMATION_DURATION,
 +                Animation::Tiled { .. } => animation_duration(),
++                Animation::Shake { .. } => crate::animations::scale(SHAKE_ANIMATION_DURATION),
 +                _ => minimize_animation_duration(),
              };
              Instant::now().duration_since(*anim.start()) < duration
@@ -1191,10 +1192,10 @@ index 20e11b71..4b37474d 100644
                  / duration.as_millis() as f32;
              ease(EaseInOutCubic, 0.0, 1.0, percentage)
 diff --git a/src/shell/mod.rs b/src/shell/mod.rs
-index 10b40b59..b5198fe2 100644
+index 108307b1..0045bc87 100644
 --- a/src/shell/mod.rs
 +++ b/src/shell/mod.rs
-@@ -124,13 +124,34 @@ use self::{
+@@ -125,13 +125,34 @@ use self::{
      },
  };
  
@@ -1230,7 +1231,7 @@ index 10b40b59..b5198fe2 100644
  #[derive(Debug, Clone)]
  pub enum Trigger {
      KeyboardSwap(shortcuts::Binding, NodeDesc),
-@@ -152,14 +173,16 @@ impl OverviewMode {
+@@ -153,14 +174,16 @@ impl OverviewMode {
      pub fn alpha(&self) -> Option<f32> {
          match self {
              OverviewMode::Started(_, start) => {
@@ -1251,7 +1252,7 @@ index 10b40b59..b5198fe2 100644
                  if percentage < 1.0 {
                      Some(ease(EaseInOutCubic, 1.0, 0.0, percentage))
                  } else {
-@@ -205,14 +228,16 @@ impl ResizeMode {
+@@ -206,14 +229,16 @@ impl ResizeMode {
      pub fn alpha(&self) -> Option<f32> {
          match self {
              ResizeMode::Started(_, start, _) => {
@@ -1272,7 +1273,7 @@ index 10b40b59..b5198fe2 100644
                  if percentage < 1.0 {
                      Some(ease(EaseInOutCubic, 1.0, 0.0, percentage))
                  } else {
-@@ -290,6 +315,7 @@ pub struct Shell {
+@@ -297,6 +322,7 @@ pub struct Shell {
  
      theme: cosmic::Theme,
      pub active_hint: bool,
@@ -1280,7 +1281,7 @@ index 10b40b59..b5198fe2 100644
      overview_mode: OverviewMode,
      swap_indicator: Option<SwapIndicator>,
      resize_mode: ResizeMode,
-@@ -372,6 +398,7 @@ pub struct WorkspaceSet {
+@@ -388,6 +414,7 @@ pub struct WorkspaceSet {
      pub active: usize,
      pub group: WorkspaceGroupHandle,
      tiling_enabled: bool,
@@ -1288,7 +1289,7 @@ index 10b40b59..b5198fe2 100644
      output: Output,
      theme: cosmic::Theme,
      appearance: AppearanceConfig,
-@@ -386,6 +413,7 @@ fn create_workspace(
+@@ -402,6 +429,7 @@ fn create_workspace(
      group_handle: &WorkspaceGroupHandle,
      active: bool,
      tiling: bool,
@@ -1296,7 +1297,7 @@ index 10b40b59..b5198fe2 100644
      theme: cosmic::Theme,
      appearance: AppearanceConfig,
  ) -> Workspace {
-@@ -415,6 +443,7 @@ fn create_workspace(
+@@ -431,6 +459,7 @@ fn create_workspace(
          workspace_handle,
          output.clone(),
          tiling,
@@ -1304,7 +1305,7 @@ index 10b40b59..b5198fe2 100644
          theme.clone(),
          appearance,
      )
-@@ -426,6 +455,7 @@ fn create_workspace_from_pinned(
+@@ -442,6 +471,7 @@ fn create_workspace_from_pinned(
      output: &Output,
      group_handle: &WorkspaceGroupHandle,
      active: bool,
@@ -1312,7 +1313,7 @@ index 10b40b59..b5198fe2 100644
      theme: cosmic::Theme,
      appearance: AppearanceConfig,
  ) -> Workspace {
-@@ -460,6 +490,7 @@ fn create_workspace_from_pinned(
+@@ -476,6 +506,7 @@ fn create_workspace_from_pinned(
          pinned,
          workspace_handle,
          output.clone(),
@@ -1320,7 +1321,7 @@ index 10b40b59..b5198fe2 100644
          theme.clone(),
          appearance,
      )
-@@ -496,17 +527,20 @@ impl WorkspaceSet {
+@@ -512,17 +543,20 @@ impl WorkspaceSet {
          state: &mut WorkspaceUpdateGuard<'_, State>,
          output: &Output,
          tiling_enabled: bool,
@@ -1342,7 +1343,7 @@ index 10b40b59..b5198fe2 100644
              theme: theme.clone(),
              sticky_layer,
              minimized_windows: Vec::new(),
-@@ -527,6 +561,7 @@ impl WorkspaceSet {
+@@ -543,6 +577,7 @@ impl WorkspaceSet {
          idx: usize,
          workspace_delta: WorkspaceDelta,
          state: &mut WorkspaceUpdateGuard<'_, State>,
@@ -1350,7 +1351,7 @@ index 10b40b59..b5198fe2 100644
      ) -> Result<bool, InvalidWorkspaceIndex> {
          if idx >= self.workspaces.len() {
              return Err(InvalidWorkspaceIndex);
-@@ -534,9 +569,10 @@ impl WorkspaceSet {
+@@ -550,9 +585,10 @@ impl WorkspaceSet {
  
          // Animate if workspaces overview isn't open
          let layer_map = layer_map_for_output(&self.output);
@@ -1364,7 +1365,7 @@ index 10b40b59..b5198fe2 100644
  
          if self.active != idx {
              let old_active = self.active;
-@@ -571,9 +607,10 @@ impl WorkspaceSet {
+@@ -587,9 +623,10 @@ impl WorkspaceSet {
          &mut self,
          workspace_delta: WorkspaceDelta,
          state: &mut WorkspaceUpdateGuard<'_, State>,
@@ -1376,7 +1377,7 @@ index 10b40b59..b5198fe2 100644
          }
          Err(InvalidWorkspaceIndex)
      }
-@@ -608,7 +645,7 @@ impl WorkspaceSet {
+@@ -624,7 +661,7 @@ impl WorkspaceSet {
              match start {
                  WorkspaceDelta::Shortcut(st) => {
                      if Instant::now().duration_since(st).as_millis() as f32
@@ -1385,7 +1386,7 @@ index 10b40b59..b5198fe2 100644
                      {
                          self.previously_active = None;
                      }
-@@ -636,6 +673,7 @@ impl WorkspaceSet {
+@@ -652,6 +689,7 @@ impl WorkspaceSet {
              &self.group,
              false,
              self.tiling_enabled,
@@ -1393,7 +1394,7 @@ index 10b40b59..b5198fe2 100644
              self.theme.clone(),
              self.appearance,
          );
-@@ -843,6 +881,7 @@ pub struct Workspaces {
+@@ -859,6 +897,7 @@ pub struct Workspaces {
      mode: WorkspaceMode,
      autotile: bool,
      autotile_behavior: TileBehavior,
@@ -1401,7 +1402,7 @@ index 10b40b59..b5198fe2 100644
      theme: cosmic::Theme,
      appearance: AppearanceConfig,
      // Persisted workspace to add on first `output_add`
-@@ -858,6 +897,7 @@ impl Workspaces {
+@@ -874,6 +913,7 @@ impl Workspaces {
              mode: config.cosmic_conf.workspaces.workspace_mode,
              autotile: config.cosmic_conf.autotile,
              autotile_behavior: config.cosmic_conf.autotile_behavior,
@@ -1409,7 +1410,7 @@ index 10b40b59..b5198fe2 100644
              theme,
              appearance: config.cosmic_conf.appearance_settings,
              persisted_workspaces: config.cosmic_conf.pinned_workspaces.clone(),
-@@ -885,6 +925,7 @@ impl Workspaces {
+@@ -901,6 +941,7 @@ impl Workspaces {
                      workspace_state,
                      output,
                      self.autotile,
@@ -1417,7 +1418,7 @@ index 10b40b59..b5198fe2 100644
                      &self.theme,
                      self.appearance,
                  )
-@@ -899,6 +940,7 @@ impl Workspaces {
+@@ -915,6 +956,7 @@ impl Workspaces {
                  output,
                  &set.group,
                  false,
@@ -1425,7 +1426,7 @@ index 10b40b59..b5198fe2 100644
                  self.theme.clone(),
                  self.appearance,
              );
-@@ -1179,11 +1221,16 @@ impl Workspaces {
+@@ -1195,11 +1237,16 @@ impl Workspaces {
          self.mode = config.cosmic_conf.workspaces.workspace_mode;
          self.layout = config.cosmic_conf.workspaces.workspace_layout;
          self.appearance = config.cosmic_conf.appearance_settings;
@@ -1442,7 +1443,7 @@ index 10b40b59..b5198fe2 100644
                  workspace.floating_layer.appearance = self.appearance;
                  workspace.tiling_layer.appearance = self.appearance;
              }
-@@ -1233,6 +1280,7 @@ impl Workspaces {
+@@ -1249,6 +1296,7 @@ impl Workspaces {
                                      &set.group,
                                      false,
                                      config.cosmic_conf.autotile,
@@ -1450,7 +1451,7 @@ index 10b40b59..b5198fe2 100644
                                      self.theme.clone(),
                                      self.appearance,
                                  ),
-@@ -1561,6 +1609,7 @@ impl Common {
+@@ -1577,6 +1625,7 @@ impl Common {
                      1.0,
                      state.increment,
                      state.movement,
@@ -1458,7 +1459,7 @@ index 10b40b59..b5198fe2 100644
                      self.event_loop_handle.clone(),
                      shell.theme.clone(),
                  ))
-@@ -1589,6 +1638,7 @@ impl Common {
+@@ -1605,6 +1654,7 @@ impl Common {
          let mut shell = self.shell.write();
          let shell_ref = &mut *shell;
          shell_ref.active_hint = self.config.cosmic_conf.active_hint;
@@ -1466,7 +1467,7 @@ index 10b40b59..b5198fe2 100644
          shell_ref.appearance_conf = self.config.cosmic_conf.appearance_settings;
          if let Some(zoom_state) = shell_ref.zoom_state.as_mut() {
              zoom_state.increment = self.config.cosmic_conf.accessibility_zoom.increment;
-@@ -1598,6 +1648,7 @@ impl Common {
+@@ -1614,6 +1664,7 @@ impl Common {
              for output in shell_ref.workspaces.sets.keys() {
                  let output_state = output.user_data().get::<Mutex<OutputZoomState>>().unwrap();
                  let mut output_state_ref = output_state.lock().unwrap();
@@ -1474,7 +1475,7 @@ index 10b40b59..b5198fe2 100644
                  let level = output_state_ref.level;
                  output_state_ref.update(level, false, zoom_state.movement, zoom_state.increment);
              }
-@@ -1612,6 +1663,7 @@ impl Common {
+@@ -1628,6 +1679,7 @@ impl Common {
  
          for mapped in shell_ref.mapped() {
              mapped.update_appearance_conf(&self.config.cosmic_conf.appearance_settings);
@@ -1482,7 +1483,7 @@ index 10b40b59..b5198fe2 100644
          }
      }
  
-@@ -1744,6 +1796,7 @@ impl Shell {
+@@ -1760,6 +1812,7 @@ impl Shell {
  
              theme,
              active_hint: config.cosmic_conf.active_hint,
@@ -1490,7 +1491,7 @@ index 10b40b59..b5198fe2 100644
              overview_mode: OverviewMode::None,
              swap_indicator: None,
              resize_mode: ResizeMode::None,
-@@ -1774,7 +1827,12 @@ impl Shell {
+@@ -1791,7 +1844,12 @@ impl Shell {
                      ) {
                          set.workspaces[set.active].tiling_layer.cleanup_drag();
                      }
@@ -1504,7 +1505,7 @@ index 10b40b59..b5198fe2 100644
  
                      let output_geo = output.geometry();
                      Ok(
-@@ -1787,7 +1845,12 @@ impl Shell {
+@@ -1804,7 +1862,12 @@ impl Shell {
              }
              WorkspaceMode::Global => {
                  for set in self.workspaces.sets.values_mut() {
@@ -1518,7 +1519,7 @@ index 10b40b59..b5198fe2 100644
                  }
                  let output_geo = output.geometry();
                  Ok(output_geo.loc + Point::from((output_geo.size.w / 2, output_geo.size.h / 2)))
-@@ -1795,6 +1858,10 @@ impl Shell {
+@@ -1812,6 +1875,10 @@ impl Shell {
          }
      }
  
@@ -1529,7 +1530,7 @@ index 10b40b59..b5198fe2 100644
      pub fn update_workspace_delta(&mut self, output: &Output, delta: f64, forward: bool) {
          match &mut self.workspaces.mode {
              WorkspaceMode::OutputBound => {
-@@ -1845,6 +1912,7 @@ impl Shell {
+@@ -1862,6 +1929,7 @@ impl Shell {
                                      forward,
                                  ),
                                  workspace_state,
@@ -1537,7 +1538,7 @@ index 10b40b59..b5198fe2 100644
                              )?;
                          } else {
                              set.activate_previous(
-@@ -1854,6 +1922,7 @@ impl Shell {
+@@ -1871,6 +1939,7 @@ impl Shell {
                                      !forward,
                                  ),
                                  workspace_state,
@@ -1545,7 +1546,7 @@ index 10b40b59..b5198fe2 100644
                              )?;
                          }
                      }
-@@ -1889,6 +1958,7 @@ impl Shell {
+@@ -1906,6 +1975,7 @@ impl Shell {
                                      forward,
                                  ),
                                  workspace_state,
@@ -1553,7 +1554,7 @@ index 10b40b59..b5198fe2 100644
                              )?;
                          } else {
                              set.activate_previous(
-@@ -1898,6 +1968,7 @@ impl Shell {
+@@ -1915,6 +1985,7 @@ impl Shell {
                                      !forward,
                                  ),
                                  workspace_state,
@@ -1561,7 +1562,7 @@ index 10b40b59..b5198fe2 100644
                              )?;
                          }
                      }
-@@ -2371,7 +2442,11 @@ impl Shell {
+@@ -2487,7 +2558,11 @@ impl Shell {
                  if matches!(trigger, Trigger::KeyboardSwap(_, _)) {
                      self.swap_indicator = Some(SwapIndicator::new(evlh, self.theme.clone()));
                  }
@@ -1574,7 +1575,7 @@ index 10b40b59..b5198fe2 100644
              }
          } else if matches!(
              self.overview_mode,
-@@ -2380,20 +2455,25 @@ impl Shell {
+@@ -2496,20 +2571,25 @@ impl Shell {
              let (reverse_duration, trigger) =
                  if let OverviewMode::Started(trigger, start) = self.overview_mode.clone() {
                      (
@@ -1604,7 +1605,7 @@ index 10b40b59..b5198fe2 100644
          {
              return (
                  OverviewMode::Active(trigger.clone()),
-@@ -2401,7 +2481,7 @@ impl Shell {
+@@ -2517,7 +2597,7 @@ impl Shell {
              );
          }
          if let OverviewMode::Ended(_, timestamp) = &self.overview_mode
@@ -1613,7 +1614,7 @@ index 10b40b59..b5198fe2 100644
          {
              return (OverviewMode::None, None);
          }
-@@ -2420,7 +2500,11 @@ impl Shell {
+@@ -2536,7 +2616,11 @@ impl Shell {
                  *old_pattern = pattern;
                  *old_direction = direction;
              } else {
@@ -1626,7 +1627,7 @@ index 10b40b59..b5198fe2 100644
              }
              self.resize_indicator = Some(ResizeIndicator::new(
                  direction,
-@@ -2429,16 +2513,21 @@ impl Shell {
+@@ -2545,16 +2629,21 @@ impl Shell {
                  self.theme.clone(),
              ));
          } else if let Some(direction) = self.resize_mode.active_direction() {
@@ -1650,7 +1651,7 @@ index 10b40b59..b5198fe2 100644
          {
              return (
                  ResizeMode::Active(binding.clone(), *direction),
-@@ -2446,7 +2535,7 @@ impl Shell {
+@@ -2562,7 +2651,7 @@ impl Shell {
              );
          }
          if let ResizeMode::Ended(timestamp, _) = self.resize_mode
@@ -1659,7 +1660,7 @@ index 10b40b59..b5198fe2 100644
          {
              return (ResizeMode::None, None);
          }
-@@ -2501,6 +2590,7 @@ impl Shell {
+@@ -2617,6 +2706,7 @@ impl Shell {
                          1.0,
                          zoom_config.increment,
                          zoom_config.view_moves,
@@ -1667,7 +1668,7 @@ index 10b40b59..b5198fe2 100644
                          loop_handle.clone(),
                          self.theme.clone(),
                      ))
-@@ -2590,12 +2680,12 @@ impl Shell {
+@@ -2706,12 +2796,12 @@ impl Shell {
      ) {
          match &self.overview_mode {
              OverviewMode::Started(trigger, timestamp)
@@ -1682,7 +1683,7 @@ index 10b40b59..b5198fe2 100644
              {
                  self.overview_mode = OverviewMode::None;
                  self.swap_indicator = None;
-@@ -2605,12 +2695,12 @@ impl Shell {
+@@ -2721,12 +2811,12 @@ impl Shell {
  
          match &self.resize_mode {
              ResizeMode::Started(binding, timestamp, direction)
@@ -1697,7 +1698,7 @@ index 10b40b59..b5198fe2 100644
              {
                  self.resize_mode = ResizeMode::None;
                  self.resize_indicator = None;
-@@ -2700,6 +2790,7 @@ impl Shell {
+@@ -2816,6 +2906,7 @@ impl Shell {
                  loop_handle.clone(),
                  self.theme.clone(),
                  self.appearance_conf,
